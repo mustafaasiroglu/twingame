@@ -1,4 +1,4 @@
-import type { Point, Terrain } from './geo';
+import { closestPoint, type Point, type Terrain } from './geo';
 import { ROAD_OFFSET, type RoadNetwork } from './roads';
 
 export interface Controls { throttle: number; steer: number; brake: boolean }
@@ -48,24 +48,28 @@ export function stepVehicle(state: VehicleState, input: Controls, dt: number, ro
   state.speed = Math.max(-MAX_REVERSE, Math.min(MAX_SPEED, state.speed));
   // Positive heading points toward +x from +z. Left is +heading, including reverse steering.
   const turn = steer * Math.min(1.4, Math.abs(state.speed) * 0.23) * Math.sign(state.speed) * dt;
-  state.heading += turn;
+  const heading = state.heading + turn;
   const distance = state.speed * dt;
-  const next = { x: state.x + Math.sin(state.heading) * distance, z: state.z + Math.cos(state.heading) * distance };
-  if (roads.fits(next)) {
+  const next = { x: state.x + Math.sin(heading) * distance, z: state.z + Math.cos(heading) * distance };
+  if (roads.fits(next, heading)) {
+    state.heading = heading;
     state.x = next.x; state.z = next.z; state.distance += Math.abs(distance);
   } else {
-    // Resolve impact along the road tangent; never snap to another road across a gap.
-    const nearest = roads.nearest(state);
-    const dx = nearest.segment.b.x - nearest.segment.a.x;
-    const dz = nearest.segment.b.z - nearest.segment.a.z;
-    const length = Math.hypot(dx, dz);
-    const tangentDistance = (Math.sin(state.heading) * dx + Math.cos(state.heading) * dz) / length * distance;
-    const slide = { x: state.x + dx / length * tangentDistance, z: state.z + dz / length * tangentDistance };
-    if (roads.fits(slide)) {
-      state.distance += Math.hypot(slide.x - state.x, slide.z - state.z);
-      state.x = slide.x; state.z = slide.z;
+    if (roads.fits(state, heading)) state.heading = heading;
+    let slide: Point = state, travelled = 0;
+    // A junction may contain several roads; the nearest centre-line is not necessarily its free tangent.
+    for (const segment of roads.nearby(state)) {
+      if (closestPoint(state, segment.a, segment.b).distance > segment.width / 2) continue;
+      const dx = segment.b.x - segment.a.x, dz = segment.b.z - segment.a.z;
+      const length = Math.hypot(dx, dz);
+      const tangentDistance = (Math.sin(state.heading) * dx + Math.cos(state.heading) * dz) / length * distance;
+      const candidate = { x: state.x + dx / length * tangentDistance, z: state.z + dz / length * tangentDistance };
+      const moved = Math.abs(tangentDistance);
+      if (moved > travelled && roads.fits(candidate, state.heading)) { slide = candidate; travelled = moved; }
     }
-    state.speed *= Math.exp(-14 * dt);
+    state.x = slide.x; state.z = slide.z; state.distance += travelled;
+    const blocked = distance === 0 ? 0 : 1 - Math.min(1, travelled / Math.abs(distance));
+    state.speed *= Math.exp(-14 * dt * blocked);
   }
   const pose = sampleVehiclePose(state, state.heading, terrain);
   state.y = pose.y;

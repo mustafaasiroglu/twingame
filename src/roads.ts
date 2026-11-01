@@ -9,7 +9,8 @@ const widths: Record<string, number> = {
   tertiary: 8, tertiary_link: 7, residential: 7, unclassified: 7, living_street: 6.4, service: 6.4,
 };
 export const ROAD_OFFSET = 0.08;
-export const VEHICLE_RADIUS = 2.15;
+export const VEHICLE_HALF_WIDTH = 1.05;
+export const VEHICLE_HALF_LENGTH = 2;
 
 export function isDrivable(way: OsmWay): boolean {
   const t = way.tags;
@@ -89,12 +90,22 @@ export class RoadNetwork<T extends RoadSegment = RoadSegment> {
   contains(p: Point): boolean {
     return this.nearby(p).some(s => closestPoint(p, s.a, s.b).distance <= s.width / 2);
   }
-  fits(p: Point, radius = VEHICLE_RADIUS): boolean {
+  fits(p: Point & { heading?: number }, heading = p.heading ?? 0): boolean {
     if (!this.contains(p)) return false;
-    // Test the footprint against the union, not each road separately, so junctions stay open.
-    for (let i = 0; i < 16; i++) {
-      const angle = i * Math.PI / 8;
-      if (!this.contains({ x: p.x + Math.cos(angle) * radius, z: p.z + Math.sin(angle) * radius })) return false;
+    const fx = Math.sin(heading), fz = Math.cos(heading);
+    const inside = (x: number, z: number) => this.contains({
+      x: p.x + fz * x + fx * z, z: p.z - fx * x + fz * z,
+    });
+    // Sample the actual oriented body envelope against the union, including concave junction edges.
+    const lengthSteps = Math.ceil(2 * VEHICLE_HALF_LENGTH / 0.25);
+    const widthSteps = Math.ceil(2 * VEHICLE_HALF_WIDTH / 0.25);
+    for (let i = 0; i <= lengthSteps; i++) {
+      const z = -VEHICLE_HALF_LENGTH + 2 * VEHICLE_HALF_LENGTH * i / lengthSteps;
+      if (!inside(-VEHICLE_HALF_WIDTH, z) || !inside(VEHICLE_HALF_WIDTH, z)) return false;
+    }
+    for (let i = 1; i < widthSteps; i++) {
+      const x = -VEHICLE_HALF_WIDTH + 2 * VEHICLE_HALF_WIDTH * i / widthSteps;
+      if (!inside(x, -VEHICLE_HALF_LENGTH) || !inside(x, VEHICLE_HALF_LENGTH)) return false;
     }
     return true;
   }
@@ -115,9 +126,10 @@ export class RoadNetwork<T extends RoadSegment = RoadSegment> {
     })).sort((a, b) => a.distance - b.distance);
     for (const { segment } of sorted) {
       const point = closestPoint(target, segment.a, segment.b);
-      if (this.fits(point)) return {
+      const pose = {
         x: point.x, z: point.z, heading: Math.atan2(segment.b.x - segment.a.x, segment.b.z - segment.a.z),
       };
+      if (this.fits(pose)) return pose;
     }
     throw new Error('No safe spawn fits the vehicle footprint');
   }

@@ -5,7 +5,7 @@ import osm from '../public/data/osm-source.json';
 import elevation from '../public/data/elevation.json';
 import provenance from '../public/data/provenance.json';
 import { clipSegment, closestPoint, project, Terrain, unproject } from '../src/geo';
-import { extractRoads, isDrivable, RoadNetwork, ROAD_OFFSET, roadWidth, type OsmData, type OsmWay, type RoadSegment } from '../src/roads';
+import { extractRoads, isDrivable, RoadNetwork, ROAD_OFFSET, roadWidth, VEHICLE_HALF_WIDTH, type OsmData, type OsmWay, type RoadSegment } from '../src/roads';
 import { createVehicle, Input, stepVehicle } from '../src/vehicle';
 import { roadPolygons, roadVertices } from '../src/scene';
 
@@ -182,7 +182,7 @@ describe('arcade vehicle', () => {
     state.speed = 22;
     advance(state, { ...neutral, throttle: 1 }, 3);
     expect(straight.fits(state)).toBe(true);
-    expect(state.x).toBeLessThan(3);
+    expect(state.x).toBeLessThanOrEqual(4 - VEHICLE_HALF_WIDTH + 1e-6);
     expect(() => stepVehicle(state, neutral, 1, straight, flat)).toThrow('50ms');
   });
   it('drives through a real source road and matches sampled elevation each step', () => {

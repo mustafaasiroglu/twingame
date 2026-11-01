@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:browser": "node scripts/browser-test.mjs",
+    "test:handling": "node scripts/handling-test.mjs",
     "data": "node scripts/prepare-data.mjs"
   },
   "dependencies": {

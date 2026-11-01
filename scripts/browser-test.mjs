@@ -25,19 +25,20 @@ function inspectRoadVisuals(page, whiteThreshold) {
   })), whiteThreshold);
 }
 
-const url = 'http://127.0.0.1:5174';
-const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '5174', '--strictPort'], { stdio: 'pipe' });
+const url = (process.env.BROWSER_URL || `http://127.0.0.1:5174${process.env.BROWSER_BASE_PATH || ''}`).replace(/\/$/, '');
+const server = process.env.BROWSER_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '5174', '--strictPort', '--base', `${process.env.BROWSER_BASE_PATH || ''}/`], { stdio: 'pipe' });
 let serverLog = '';
-server.stdout.on('data', data => { serverLog += data; });
-server.stderr.on('data', data => { serverLog += data; });
+server?.stdout.on('data', data => { serverLog += data; });
+server?.stderr.on('data', data => { serverLog += data; });
 let browser;
 const screenshots = process.env.SCREENSHOT_DIR || 'test-results';
+const prefix = process.env.SCREENSHOT_PREFIX || 'ihlamur';
 await mkdir(screenshots, { recursive: true });
 try {
   let ready = false;
   for (let i = 0; i < 80; i++) {
-    if (server.exitCode !== null) throw new Error(`Preview exited: ${serverLog}`);
-    try { ready = (await fetch(url)).ok; } catch { /* Expected until our own preview is listening. */ }
+    if (server && server.exitCode !== null) throw new Error(`Preview exited: ${serverLog}`);
+    try { ready = (await fetch(`${url}/`)).ok; } catch { /* Expected until our own preview is listening. */ }
     if (ready) break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
@@ -154,13 +155,13 @@ try {
   await page.keyboard.press('KeyP');
   await page.evaluate(() => { document.getElementById('paused').style.display = 'none'; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(screenshots, 'ihlamur-chase.png') });
+  await page.screenshot({ path: path.join(screenshots, `${prefix}-chase.png`) });
   await page.keyboard.press('KeyV');
   assert((await read()).overview);
   // Hide only the pause overlay for a clean screenshot, while simulation stays stopped.
   await page.evaluate(() => { document.getElementById('paused').style.display = 'none'; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(screenshots, 'ihlamur-overview.png') });
+  await page.screenshot({ path: path.join(screenshots, `${prefix}-overview.png`) });
   await page.getByRole('button', { name: 'Veri ve sınırlar' }).click();
   await page.getByRole('dialog').waitFor();
   assert((await page.getByRole('dialog').innerText()).includes('produced using Copernicus WorldDEM-30'));
@@ -171,7 +172,7 @@ try {
   await page.waitForFunction(() => window.twinGame, null, { timeout: 60000, polling: 100 });
   await page.getByRole('button', { name: 'Sürüşe başla' }).click();
   assert((await inspectRoadVisuals(page, 210)).visibleForwardMarks > 0, 'Forward paint must stay visible in dark theme too');
-  await page.screenshot({ path: path.join(screenshots, 'ihlamur-dark.png') });
+  await page.screenshot({ path: path.join(screenshots, `${prefix}-dark.png`) });
   const stats = await page.evaluate(() => window.twinGame.stats);
   await page.close();
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
@@ -202,7 +203,7 @@ try {
   assert(mobileDriven.onRoad);
   await mobile.getByRole('button', { name: 'Başa dön' }).tap();
   await mobile.waitForFunction(() => document.getElementById('speed').textContent === '00', null, { timeout: 10000, polling: 100 });
-  await mobile.screenshot({ path: path.join(screenshots, 'ihlamur-mobile.png') });
+  await mobile.screenshot({ path: path.join(screenshots, `${prefix}-mobile.png`) });
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await mobile.getByRole('button', { name: 'Kamera görünümünü değiştir' }).tap();
   assert((await mobile.evaluate(() => window.twinGame.readState())).overview, 'Touch users must also have an overview camera');
@@ -213,7 +214,7 @@ try {
   await mobileContext.close();
   const failurePage = await browser.newPage();
   await failurePage.route(`${url}/data/elevation.json`, route => route.fulfill({ status: 404, body: 'Missing source raster' }));
-  await failurePage.goto(url);
+  await failurePage.goto(`${url}/`);
   await failurePage.locator('#load-status.error').waitFor();
   assert(await failurePage.getByRole('button', { name: 'Sürüşe başla' }).isDisabled());
   assert((await failurePage.locator('#load-status').innerText()).includes('elevation'));
@@ -231,5 +232,5 @@ try {
   throw error;
 } finally {
   if (browser) await browser.close();
-  server.kill();
+  server?.kill();
 }

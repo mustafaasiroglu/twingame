@@ -21,6 +21,24 @@ npm run preview
 
 The production site is in `dist`. Serve it over HTTP; opening `index.html` directly as a file will not work. All gameplay data and assets are included in that build. The default deployment is at a domain root; for a subdirectory build, run `npm run build -- --base=/your-prefix/`.
 
+### GitHub Pages
+
+The Pages workflow `.github/workflows/pages.yml` publishes the current game from **`mustafaasiroglu-eminonu-sirkeci-driving`**, not the older `main` branch. It runs tests, builds with **`/twingame/`** as Vite's base, uploads the complete static `dist` and deploys through the `github-pages` environment with short-lived OIDC authorization. No stored deployment token is needed. Pushes to that implementation branch trigger deployment; GitHub Pages must use **GitHub Actions** as its build source.
+
+Project site: **https://mustafaasiroglu.github.io/twingame/**. Game data and the generated worker resolve below that project path, not localhost or the domain root. Keep the workflow branch filter and Pages environment branch policy aligned if the implementation branch changes. The repository remains on its existing default branch; this workflow does not merge or publish stale `main` content.
+
+Validate the production project path locally before publishing:
+
+```powershell
+npm test
+npm run build -- --base=/twingame/
+$env:BROWSER_BASE_PATH = '/twingame'
+npm run test:browser
+Remove-Item Env:BROWSER_BASE_PATH
+```
+
+To run the same actual-control, data/worker and mobile browser checks against the published site, set `BROWSER_URL=https://mustafaasiroglu.github.io/twingame/` and run `npm run test:browser`. `SCREENSHOT_PREFIX` distinguishes published-site screenshots from local ones. When `BROWSER_URL` is supplied, the test does not start or stop a local preview. Pages publication makes the site and bundled static assets public; the OSM/Copernicus notices above still apply. The approximately 164 MB static dataset is retained rather than silently reducing the region.
+
 Browser integration checks (run after the production build):
 
 ```powershell

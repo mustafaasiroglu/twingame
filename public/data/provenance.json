@@ -1,0 +1,59 @@
+{
+  "bounds": {
+    "west": 28.9655,
+    "east": 28.9825,
+    "south": 41.0095,
+    "north": 41.0178
+  },
+  "origin": {
+    "lon": 28.974,
+    "lat": 41.01365
+  },
+  "retrievedAt": "2026-11-01T11:05:19.978Z",
+  "roads": {
+    "provider": "OpenStreetMap contributors",
+    "license": "ODbL 1.0",
+    "attribution": "© OpenStreetMap contributors",
+    "licenseUrl": "https://www.openstreetmap.org/copyright",
+    "endpoint": "https://overpass-api.de/api/interpreter",
+    "query": "[out:json][timeout:90];(way[\"highway\"][\"area\"!=\"yes\"](41.0095,28.9655,41.0178,28.9825););out body;>;out skel qt;",
+    "osmTimestamp": "2026-11-01T10:53:00Z",
+    "retrievedAt": "2026-11-01T10:54:33.795Z",
+    "rawSha256": "95bf44adee0341988ec97ed9bdfb94300eddaf7cf16ea5a2658a2ffe38b86ef8"
+  },
+  "elevation": {
+    "provider": "Copernicus DEM GLO-30 Public (AWS public COG distribution)",
+    "sourceUrl": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N41_00_E028_00_DEM/Copernicus_DSM_COG_10_N41_00_E028_00_DEM.tif",
+    "documentation": "https://copernicus-dem-30m.s3.amazonaws.com/readme.html",
+    "licenseUrl": "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM",
+    "attribution": "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.",
+    "modifiedAttribution": "produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved",
+    "acquisitionPeriod": "Primarily TanDEM-X 2011–2015; older models may fill gaps. AWS distribution: Copernicus DEM 2021 release.",
+    "product": "DSM, not bare-earth DTM",
+    "verticalDatum": "EGM2008 orthometric height, metres",
+    "horizontalDatum": "WGS84",
+    "spacingDegrees": {
+      "lon": 0.0002777777777777778,
+      "lat": 0.0002777777777777778
+    },
+    "pixelWindow": [
+      3474,
+      3534,
+      3540,
+      3568
+    ],
+    "pixelCoordinates": "RasterPixelIsPoint; sample position = GeoTIFF tiepoint origin + (index + 0) times resolution",
+    "geoKeys": {
+      "GTModelTypeGeoKey": 2,
+      "GTRasterTypeGeoKey": 2,
+      "GeographicTypeGeoKey": 4326,
+      "GeogCitationGeoKey": "WGS 84",
+      "GeogAngularUnitsGeoKey": 9102,
+      "GeogSemiMajorAxisGeoKey": 6378137,
+      "GeogInvFlatteningGeoKey": 298.257223563
+    },
+    "noData": null,
+    "min": -0.3200887441635132,
+    "max": 71.53548431396484
+  }
+}

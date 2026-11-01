@@ -31,7 +31,7 @@ If Playwright reports that its Chromium executable is missing, run `npx playwrig
 
 ## Geographic data and licensing
 
-Bundled source data are in `public/data`; **these data have their own licenses, separate from application code**. Exact URLs, download times, OSM base timestamp, query, raw-source SHA-256, GeoTIFF registration and extraction window are in [provenance.json](public/data/provenance.json).
+Bundled source data are in `public/data`; **these data have their own licenses, separate from application code**. Exact URLs, download times, OSM base timestamp, query, raw-source SHA-256, GeoTIFF registration and extraction window are in [provenance.json](public/data/provenance.json). JSON files are explicitly checked out with LF endings through `.gitattributes`, preserving the raw-source checksum on Windows as well as Unix.
 
 | Layer | Source | Rights and important limits |
 | --- | --- | --- |

@@ -1,15 +1,16 @@
 import { project, Terrain, type Bounds, type ElevationData, type Origin } from './geo';
-import { extractRoads, RoadNetwork, type OsmData } from './roads';
+import { RoadNetwork, type RoadSegment } from './roads';
 import { createVehicle, Input, stepVehicle } from './vehicle';
 import { GameScene, palette } from './scene';
-import { ROAD_GRID_METRES, RoadSurface } from './surface';
+import { ROAD_GRID_METRES, RoadSurface, type GradedSegment } from './surface';
+import type { WorldManifest } from './world';
 
 function element<T extends HTMLElement>(id: string): T {
   const value = document.getElementById(id);
   if (!value) throw new Error(`Missing interface element: ${id}`);
   return value as T;
 }
-interface Provenance { bounds: Bounds; origin: Origin; retrievedAt: string }
+interface Provenance { bounds: Bounds; origin: Origin; retrievedAt: string; region: { radiusMetres: number; osmId: number }; roads: { rawSha256: string } }
 async function localJson<T>(name: string): Promise<T> {
   const response = await fetch(`${import.meta.env.BASE_URL}data/${name}.json`);
   if (!response.ok) throw new Error(`${name}: local data HTTP ${response.status}`);
@@ -88,16 +89,30 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-drive]'
 }
 
 async function boot(): Promise<void> {
-  const [osm, elevation, provenance] = await Promise.all([
-    localJson<OsmData>('osm-source'), localJson<ElevationData>('elevation'), localJson<Provenance>('provenance'),
+  const [segments, displaySegments, elevation, provenance, manifest, profileResponse] = await Promise.all([
+    localJson<RoadSegment[]>('roads'), localJson<RoadSegment[]>('display-roads'), localJson<ElevationData>('elevation'), localJson<Provenance>('provenance'), localJson<WorldManifest>('world'),
+    fetch(`${import.meta.env.BASE_URL}data/profiles.bin`),
   ]);
+  if (!profileResponse.ok) throw new Error(`Prepared road profiles: HTTP ${profileResponse.status}`);
+  if (manifest.sourceSha256 !== provenance.roads.rawSha256) throw new Error('Prepared OSM world does not match source provenance');
+  const packed = new Float64Array(await profileResponse.arrayBuffer());
+  if (!packed.length || packed.length % 9 || packed.some(v => !Number.isFinite(v))) throw new Error('Invalid prepared road profiles');
+  const profiles: GradedSegment[] = [];
+  for (let i = 0; i < packed.length; i += 9) profiles.push({ a: { x: packed[i], z: packed[i + 1] }, b: { x: packed[i + 2], z: packed[i + 3] }, width: packed[i + 4], ha: packed[i + 5], hb: packed[i + 6], rawHa: packed[i + 7], rawHb: packed[i + 8], name: '', highway: 'profile', wayId: -1 });
   const sourceTerrain = new Terrain(elevation, provenance.origin);
-  const roads = new RoadNetwork(extractRoads(osm, provenance.bounds, provenance.origin));
-  status.textContent = 'Bağlı kavşaklar ve kaynaklı arazi hazırlanıyor…';
+  if (!segments.length || segments.some(s => ![s.a.x, s.a.z, s.b.x, s.b.z, s.width].every(Number.isFinite))) throw new Error('Invalid prepared road geometry');
+  const roads = new RoadNetwork(segments);
+  status.textContent = '5 km alanın yerel arazi, bina ve ağaç detayları hazırlanıyor…';
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const terrain = new RoadSurface(sourceTerrain, roads);
-  const scene = new GameScene(element('world'), terrain, roads);
+  const terrain = new RoadSurface(sourceTerrain, roads, profiles);
+  const scene = new GameScene(element('world'), terrain, new RoadNetwork(displaySegments), manifest);
   const spawn = roads.spawn(provenance.origin);
+  await scene.prepare(spawn);
+  scene.onError = error => {
+    console.error('OSM detail loading failed:', error);
+    setPaused(true); startButton.disabled = true; element('welcome').hidden = false;
+    status.classList.add('error'); status.textContent = `Yerel harita detayı yüklenemedi: ${error instanceof Error ? error.message : String(error)}. Yeniden yükleyin.`;
+  };
   let state = createVehicle(spawn, terrain);
   reset = () => {
     state = createVehicle(spawn, terrain);
@@ -116,7 +131,9 @@ async function boot(): Promise<void> {
   cameraButton.disabled = false;
   resetButton.disabled = false;
   element<HTMLButtonElement>('map-camera-button').disabled = false;
-  status.textContent = `${(roads.totalLength / 1000).toFixed(1)} km bağlı yol · ${elevation.cols}×${elevation.rows} kaynak DSM · ${ROAD_GRID_METRES} m yol ağı · düzenlenmiş kotlar`;
+  status.textContent = `5 km yarıçap · ${(roads.totalLength / 1000).toFixed(0)} km bağlı yol · ${manifest.stats.buildings} OSM bina · ${elevation.cols}×${elevation.rows} kaynak DSM`;
+  element('detail-counts').textContent = `${manifest.stats.mappedTrees} konumu işlenmiş ağaç · ${manifest.stats.rowTrees} ağaç sırasından türetilmiş · ${manifest.stats.inferredTrees} tahmini ağaç. Bina yüksekliği: ${manifest.stats.declaredHeights} height etiketi, ${manifest.stats.levelHeights} kat sayısından, ${manifest.stats.defaultHeights} varsayılan/tahmini (normalde 9 m). ${manifest.stats.omittedIncomplete} eksik/kapanmayan OSM geometrisi çizilmedi.`;
+  if (manifest.incomplete.length) console.warn('Incomplete source areas were explicitly omitted:', manifest.incomplete);
   element('data-date').textContent = provenance.retrievedAt.slice(0, 10);
   element('network-length').textContent = `${(roads.totalLength / 1000).toFixed(1)} km yol`;
 
@@ -149,27 +166,27 @@ async function boot(): Promise<void> {
   background.strokeStyle = css('text-muted');
   background.lineCap = 'round';
   for (const s of roads.segments) {
+    if (s.highway === 'service' || s.highway === 'living_street') continue;
     const a = mapPoint(s.a), b = mapPoint(s.b);
-    background.lineWidth = Math.max(1.8, s.width * scale);
+    background.lineWidth = Math.max(0.35, s.width * scale);
     background.beginPath(); background.moveTo(a.x, a.y); background.lineTo(b.x, b.y); background.stroke();
   }
   background.font = '19px "Segoe UI", sans-serif';
   background.fillStyle = css('text');
-  for (const [name, lon, lat] of [['EMİNÖNÜ', 28.9711, 41.0165], ['SİRKECİ', 28.9777, 41.0148]] as const) {
-    const at = mapPoint(project(lon, lat, provenance.origin));
-    background.fillText(name, at.x - 28, at.y - 8);
-  }
+  const palace = mapPoint(project(provenance.origin.lon, provenance.origin.lat, provenance.origin));
+  background.fillText('IHLAMUR KASRI', palace.x - 65, palace.y - 12);
+  background.beginPath(); background.arc(palace.x, palace.y, provenance.region.radiusMetres * scale, 0, Math.PI * 2); background.stroke();
   background.fillStyle = css('text-muted');
   background.font = '16px Consolas, monospace';
-  background.fillText('200 m', 20, map.height - 14);
+  background.fillText('2 km', 20, map.height - 14);
   background.strokeStyle = css('text-muted'); background.lineWidth = 2;
-  background.beginPath(); background.moveTo(20, map.height - 36); background.lineTo(20 + 200 * scale, map.height - 36); background.stroke();
+  background.beginPath(); background.moveTo(20, map.height - 36); background.lineTo(20 + 2000 * scale, map.height - 36); background.stroke();
 
   // Read-only inspection surface for reproducible browser checks; never accepts commands.
   Object.defineProperty(window, 'twinGame', { value: Object.freeze({
     readState: () => ({ ...state, started, paused, overview: scene.overview, onRoad: roads.fits(state), roadHeight: terrain.height(state.x, state.z), terrainHeight: sourceTerrain.height(state.x, state.z) }),
     readRenderState: () => scene.readRenderState(state),
-    stats: Object.freeze({ segments: roads.segments.length, roadLength: roads.totalLength, elevationSamples: elevation.values.length, surfaceGridMetres: ROAD_GRID_METRES }),
+    stats: Object.freeze({ segments: roads.segments.length, roadLength: roads.totalLength, elevationSamples: elevation.values.length, surfaceGridMetres: ROAD_GRID_METRES, radiusMetres: provenance.region.radiusMetres, center: provenance.origin, palaceOsmId: provenance.region.osmId, ...manifest.stats }),
   }), configurable: true });
   scene.renderer.domElement.addEventListener('webglcontextlost', event => {
     event.preventDefault();
@@ -182,6 +199,7 @@ async function boot(): Promise<void> {
   let previous = performance.now(), accumulator = 0, hudElapsed = 1;
   const fixedStep = 1 / 120;
   function frame(now: number): void {
+    scene.trackFrame(Math.max(0, now - previous));
     const dt = Math.min(0.05, Math.max(0, (now - previous) / 1000));
     previous = now;
     if (!paused) {

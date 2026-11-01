@@ -7,10 +7,11 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=1 --no-file-parallelism",
     "test:browser": "node scripts/browser-test.mjs",
     "test:handling": "node scripts/handling-test.mjs",
-    "data": "node scripts/prepare-data.mjs"
+    "data": "node scripts/prepare-data.mjs && vite-node scripts/prepare-world.ts",
+    "data:world": "vite-node scripts/prepare-world.ts"
   },
   "dependencies": {
     "earcut": "^3.0.2",
@@ -23,6 +24,7 @@
     "@types/three": "^0.180.0",
     "geotiff": "^3.0.5",
     "playwright": "^1.56.1",
+    "osm-pbf-parser": "^2.3.0",
     "typescript": "^5.9.3",
     "vite": "^7.1.12",
     "vitest": "^3.2.4"

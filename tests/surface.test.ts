@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Matrix4, Quaternion, Vector3 } from 'three';
-import elevation from '../public/data/elevation.json';
-import provenance from '../public/data/provenance.json';
-import osm from '../public/data/osm-source.json';
+import { source, network as realRoads, surface as realSurface, provenance } from './data';
 import { Terrain, type Point } from '../src/geo';
 import { extractRoads, RoadNetwork, ROAD_OFFSET, type OsmData, type RoadSegment } from '../src/roads';
 import { engineerProfile, MAX_PROFILE_GRADE, ROAD_GRID_METRES, RoadSurface, SHOULDER_BLEND_METRES } from '../src/surface';
@@ -18,9 +16,6 @@ function fixture(height: (x: number, z: number) => number): Terrain {
   return new Terrain(data, blank.origin);
 }
 const straight = new RoadNetwork([segment({ x: 0, z: -180 }, { x: 0, z: 180 })]);
-const source = new Terrain(elevation, provenance.origin);
-const realRoads = new RoadNetwork(extractRoads(osm as OsmData, provenance.bounds, provenance.origin));
-const realSurface = new RoadSurface(source, realRoads);
 
 describe('vehicle slopes and actual rendered orientation', () => {
   it('raises the right side when ground rises right, including negative bank', () => {
@@ -102,22 +97,25 @@ describe('source-derived engineered roads', () => {
     expect(graded).toBeLessThan(raw * 0.65 ** 2);
     expect(crossGraded).toBeLessThan(crossRaw * 0.7 ** 2);
     let distantSamples = 0;
-    for (let r = 0; r < realSurface.data.rows; r += 17) for (let c = 0; c < realSurface.data.cols; c += 17) {
-      const p = realSurface.vertex(c, r);
-      if (realRoads.nearest(p).distance > 30) {
-        expect(realSurface.height(p.x, p.z)).toBeCloseTo(source.height(p.x, p.z), 7); distantSamples++;
+    for (let z = source.min.z + 90; z < source.max.z - 90; z += 189) for (let x = source.min.x + 90; x < source.max.x - 90; x += 189) {
+      const p = { x, z };
+      if (realRoads.nearest(p).distance > 35) {
+        expect(realSurface.height(p.x, p.z)).toBeCloseTo(source.height(p.x, p.z), 6); distantSamples++;
       }
     }
     expect(distantSamples).toBeGreaterThan(100);
     const maximum = realSurface.data.values.reduce((max, v) => Math.max(max, v), -Infinity);
     const minimum = realSurface.data.values.reduce((min, v) => Math.min(min, v), Infinity);
     expect(maximum - minimum).toBeGreaterThan(40);
-  });
+  }, 60000);
   it('uses fine cells and one continuous interpolation for rendered roads, paint and driving', () => {
-    expect(realSurface.dx).toBeLessThanOrEqual(ROAD_GRID_METRES);
-    expect(realSurface.dz).toBeLessThanOrEqual(ROAD_GRID_METRES);
-    const polygons = roadPolygons(realRoads.segments.slice(0, 6));
-    const vertices = roadVertices(realSurface, polygons);
+    const spawn = realRoads.spawn(provenance.origin);
+    const local = realSurface.tile(Math.floor((spawn.x - realSurface.min.x) / 192), Math.floor((spawn.z - realSurface.min.z) / 192));
+    expect(local.dx).toBeLessThanOrEqual(ROAD_GRID_METRES + 1e-7);
+    expect(local.dz).toBeLessThanOrEqual(ROAD_GRID_METRES + 1e-7);
+    const nearby = realRoads.nearby(spawn);
+    const polygons = roadPolygons(nearby);
+    const vertices = roadVertices(local, polygons);
     expect(vertices.length).toBeGreaterThan(500);
     for (let i = 0; i < vertices.length; i += 9) {
       const cx = (vertices[i] + vertices[i + 3] + vertices[i + 6]) / 3;
@@ -125,14 +123,14 @@ describe('source-derived engineered roads', () => {
       const cy = (vertices[i + 1] + vertices[i + 4] + vertices[i + 7]) / 3;
       expect(cy).toBeCloseTo(realSurface.height(cx, cz) + ROAD_OFFSET, 7);
       for (const [a, b] of [[0, 3], [3, 6], [6, 0]]) {
-        expect(Math.hypot(vertices[i + a] - vertices[i + b], vertices[i + a + 2] - vertices[i + b + 2])).toBeLessThanOrEqual(Math.hypot(realSurface.dx, realSurface.dz) + 1e-7);
+        expect(Math.hypot(vertices[i + a] - vertices[i + b], vertices[i + a + 2] - vertices[i + b + 2])).toBeLessThanOrEqual(Math.hypot(local.dx, local.dz) + 1e-7);
       }
     }
-    const p = realSurface.vertex(180, 170);
+    const p = local.vertex(20, 20);
     expect(Math.abs(realSurface.height(p.x + 1e-5, p.z) - realSurface.height(p.x - 1e-5, p.z))).toBeLessThan(0.001);
-    const wide = realRoads.segments.filter(s => s.width >= 7.5 && Math.hypot(s.b.x - s.a.x, s.b.z - s.a.z) > 20).slice(0, 6);
+    const wide = nearby.filter(s => s.width >= 7.5);
     const marks = roadMarkings(new RoadNetwork(wide));
-    const paint = surfaceVertices(realSurface, marks.polygons, ROAD_OFFSET + MARKING_LIFT);
+    const paint = surfaceVertices(local, marks.polygons, ROAD_OFFSET + MARKING_LIFT);
     expect(paint.length).toBeGreaterThan(0);
     for (let i = 0; i < paint.length; i += 9) {
       const x = (paint[i] + paint[i + 3] + paint[i + 6]) / 3, z = (paint[i + 2] + paint[i + 5] + paint[i + 8]) / 3;

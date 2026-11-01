@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -45,7 +45,7 @@ try {
   browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-webgl'] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
   const errors = [], external = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => { errors.push(error.message); console.error('Browser exception:', error.stack); });
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('request', request => { if (!request.url().startsWith(url)) external.push(request.url()); });
   await page.goto(`${url}/?scoutTheme=light`);
@@ -60,6 +60,11 @@ try {
   assert(visual.roadMaxEdge <= Math.sqrt(2) * 3 + 1e-5 && visual.roadTriangles > 10000, 'Road polygons must use the fine shared 3 m surface');
   assert(visual.asphaltTextured && visual.asphaltTileMetres === 4);
   assert(visual.carParts > 25, 'Vehicle must have detailed body, cabin, windows, wheels and lamps');
+  assert(visual.activeChunks === 121 && visual.activeBuildings > 50 && visual.activeTrees > 10, 'Nearby source details must load into bounded terrain/detail chunks');
+  assert.deepEqual(visual.palaceBuildings.map(b => b.id).sort(), ['way/312484207', 'way/312484208'], 'Both actual palace footprints must render near the real OSM centre');
+  assert(visual.focusTilesLoaded, 'All tiles intersecting the palace footprints must render at detail LOD, not just a clipped fragment');
+  assert(visual.palaceBuildings.every(b => b.heightSource === 'default' && b.height === 9 && Math.abs(b.roofHeight - b.siteHeight - 9) < 1e-8), 'Palace roofs must use explicitly inferred heights above actual sampled terrain');
+  assert(visual.sidewalksMapped + visual.sidewalksInferred > 0, 'Roadside detail must be present without covering the asphalt');
   const gx = Math.tan(initial.roll), gz = Math.tan(initial.pitch);
   const expectedRightY = gx / Math.sqrt((1 + gz * gz) * (1 + gx * gx + gz * gz));
   assert(Math.abs(visual.forward[1] - Math.sin(initial.pitch)) < 1e-6 && Math.abs(visual.right[1] - expectedRightY) < 1e-6, 'Actual rendered vehicle axes must match the road tangent, not be flat or reversed');
@@ -94,17 +99,68 @@ try {
   assert((await read()).paused, 'Losing focus must pause and release inputs');
   await page.keyboard.press('KeyP');
   await page.keyboard.press('KeyR');
+  await page.waitForFunction(() => {
+    const world = window.twinGame.readRenderState();
+    return world.chunkCenter === world.targetChunkCenter && !world.loadingChunks;
+  }, null, { timeout: 60000, polling: 100 });
+  const chunkCenter = (await page.evaluate(() => window.twinGame.readRenderState())).chunkCenter;
+  const sourceRoads = JSON.parse(await readFile('public/data/roads.json', 'utf8'));
+  const firstRoad = sourceRoads.find(s => s.wayId === 43960781), branch = sourceRoads.find(s => s.wayId === 229739448);
+  assert(firstRoad && branch, 'The source-connected local streaming route must exist');
+  const turnHeading = Math.atan2(branch.a.x - branch.b.x, branch.a.z - branch.b.z) + Math.PI * 2;
+  await page.evaluate(() => {
+    const samples = { heartbeat: [], frames: [] }, clocks = { heartbeat: performance.now(), frames: performance.now() };
+    const timer = setInterval(() => { const now = performance.now(); samples.heartbeat.push(now - clocks.heartbeat); clocks.heartbeat = now; }, 50);
+    let running = true;
+    const frame = now => { samples.frames.push(now - clocks.frames); clocks.frames = now; if (running) requestAnimationFrame(frame); };
+    requestAnimationFrame(frame);
+    window.stopStreamMeasurement = () => { running = false; clearInterval(timer); return samples; };
+  });
+  let crossed = false;
+  for (let i = 0; i < 250; i++) {
+    const state = await read();
+    assert(state.onRoad && !state.paused, 'Actual key-driven chunk transition must remain comfortably on asphalt');
+    if ((await page.evaluate(() => window.twinGame.readRenderState())).targetChunkCenter !== chunkCenter) { crossed = true; break; }
+    const target = state.x > firstRoad.a.x + 4 ? initial.heading : turnHeading;
+    const error = Math.atan2(Math.sin(target - state.heading), Math.cos(target - state.heading));
+    if (error > 0.04) { await page.keyboard.up('ArrowRight'); await page.keyboard.down('ArrowLeft'); }
+    else if (error < -0.04) { await page.keyboard.up('ArrowLeft'); await page.keyboard.down('ArrowRight'); }
+    else { await page.keyboard.up('ArrowLeft'); await page.keyboard.up('ArrowRight'); }
+    if (state.speed < 4.5) await page.keyboard.down('ArrowUp'); else await page.keyboard.up('ArrowUp');
+    await page.waitForTimeout(100);
+  }
+  for (const key of ['ArrowUp', 'ArrowLeft', 'ArrowRight']) await page.keyboard.up(key);
+  assert(crossed, 'Real arrow steering must cross the terrain-chunk boundary, not just test the initial scene');
+  await page.keyboard.down('Space');
+  await page.waitForFunction(() => Math.abs(window.twinGame.readState().speed) < 0.1, null, { timeout: 10000, polling: 100 });
+  await page.keyboard.up('Space');
+  await page.waitForFunction(center => {
+    const world = window.twinGame.readRenderState();
+    return world.chunkCenter !== center && !world.loadingChunks;
+  }, chunkCenter, { timeout: 60000, polling: 100 });
+  const streamWorld = await page.evaluate(() => window.twinGame.readRenderState());
+  const timings = await page.evaluate(() => window.stopStreamMeasurement());
+  const sortedFrames = timings.frames.slice(2).sort((a, b) => a - b);
+  const performance = { renderer: 'headless Chromium / SwiftShader', medianFrameMs: sortedFrames[Math.floor(sortedFrames.length / 2)], p95FrameMs: sortedFrames[Math.floor(sortedFrames.length * 0.95)], maxHeartbeatMs: Math.max(...timings.heartbeat), pixelRatio: streamWorld.pixelRatio, from: chunkCenter, to: streamWorld.chunkCenter, activeChunks: streamWorld.activeChunks };
+  console.log('Streaming measurement:', performance);
+  assert(timings.heartbeat.length > 20 && Math.max(...timings.heartbeat) < 1000, 'Mesh streaming must keep the main event loop responsive, without synchronous multisecond polygon stalls');
+  assert.equal(streamWorld.activeChunks, 121, 'Old chunks must be evicted after a real transition');
+  await page.keyboard.press('KeyR');
+  await page.waitForFunction(center => {
+    const world = window.twinGame.readRenderState();
+    return world.chunkCenter === center && !world.loadingChunks;
+  }, chunkCenter, { timeout: 60000, polling: 100 });
   await page.waitForFunction(() => document.getElementById('speed').textContent === '00', null, { timeout: 10000, polling: 100 });
   await page.keyboard.press('KeyP');
   await page.evaluate(() => { document.getElementById('paused').style.display = 'none'; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-chase.png') });
+  await page.screenshot({ path: path.join(screenshots, 'ihlamur-chase.png') });
   await page.keyboard.press('KeyV');
   assert((await read()).overview);
   // Hide only the pause overlay for a clean screenshot, while simulation stays stopped.
   await page.evaluate(() => { document.getElementById('paused').style.display = 'none'; });
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-overview.png') });
+  await page.screenshot({ path: path.join(screenshots, 'ihlamur-overview.png') });
   await page.getByRole('button', { name: 'Veri ve sınırlar' }).click();
   await page.getByRole('dialog').waitFor();
   assert((await page.getByRole('dialog').innerText()).includes('produced using Copernicus WorldDEM-30'));
@@ -115,7 +171,7 @@ try {
   await page.waitForFunction(() => window.twinGame, null, { timeout: 60000, polling: 100 });
   await page.getByRole('button', { name: 'Sürüşe başla' }).click();
   assert((await inspectRoadVisuals(page, 210)).visibleForwardMarks > 0, 'Forward paint must stay visible in dark theme too');
-  await page.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-dark.png') });
+  await page.screenshot({ path: path.join(screenshots, 'ihlamur-dark.png') });
   const stats = await page.evaluate(() => window.twinGame.stats);
   await page.close();
   const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
@@ -146,7 +202,7 @@ try {
   assert(mobileDriven.onRoad);
   await mobile.getByRole('button', { name: 'Başa dön' }).tap();
   await mobile.waitForFunction(() => document.getElementById('speed').textContent === '00', null, { timeout: 10000, polling: 100 });
-  await mobile.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-mobile.png') });
+  await mobile.screenshot({ path: path.join(screenshots, 'ihlamur-mobile.png') });
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await mobile.getByRole('button', { name: 'Kamera görünümünü değiştir' }).tap();
   assert((await mobile.evaluate(() => window.twinGame.readState())).overview, 'Touch users must also have an overview camera');
@@ -165,11 +221,11 @@ try {
   await failurePage.close();
   assert.deepEqual(external, [], 'Gameplay must use only persisted local data and assets');
   assert.deepEqual(errors, [], 'Browser must have no runtime/console errors');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['local-only requests', 'WebGL render', 'forward-visible lane paint', '3 m road tessellation', 'procedural asphalt scale', 'detailed vehicle and correct lean', 'arrow acceleration', 'reverse', 'steering', 'engineered road height', 'pause/focus loss', 'reset', 'overview including touch', 'attribution', 'dark theme', 'mobile layout', 'multi-touch driving', 'graphics-context loss handling', 'explicit missing-elevation failure', 'zero unexpected browser errors'], render: { visibleForwardMarks: visual.visibleForwardMarks, roadTriangles: visual.roadTriangles, roadMaxEdge: visual.roadMaxEdge, carParts: visual.carParts }, screenshots, stats }, null, 2));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['local-only requests', 'Ihlamur palace footprints and inferred heights', 'bounded chunks with buildings/trees/sidewalks', 'real arrow-driven chunk transition and main-thread responsiveness', 'WebGL render', 'forward-visible lane paint', '3 m road tessellation', 'procedural asphalt scale', 'detailed vehicle and correct lean', 'arrow acceleration', 'reverse', 'steering', 'engineered road height', 'pause/focus loss', 'reset', 'overview including touch', 'attribution', 'dark theme', 'mobile layout', 'multi-touch driving', 'graphics-context loss handling', 'explicit missing-elevation failure', 'zero unexpected browser errors'], render: { visibleForwardMarks: visual.visibleForwardMarks, roadTriangles: visual.roadTriangles, roadMaxEdge: visual.roadMaxEdge, carParts: visual.carParts, chunks: visual.activeChunks, buildings: visual.activeBuildings, trees: visual.activeTrees, palaceBuildings: visual.palaceBuildings, drawCalls: visual.drawCalls, triangles: visual.triangles }, performance, screenshots, stats }, null, 2));
 } catch (error) {
   if (browser) {
     for (const context of browser.contexts()) for (const page of context.pages()) {
-      console.error('Failed browser page:', page.url(), await page.locator('#load-status').textContent().catch(() => 'No load status'), await page.evaluate(() => window.twinGame?.readState()));
+      console.error('Failed browser page:', page.url(), await page.locator('#load-status').textContent().catch(() => 'No load status'), await page.evaluate(() => ({ state: window.twinGame?.readState(), render: window.twinGame?.readRenderState() })));
     }
   }
   throw error;

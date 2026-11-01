@@ -1,17 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import osm from '../public/data/osm-source.json';
-import elevation from '../public/data/elevation.json';
-import provenance from '../public/data/provenance.json';
+import { elevation, provenance, source as terrain, segments, network } from './data';
 import { clipSegment, closestPoint, project, Terrain, unproject } from '../src/geo';
 import { extractRoads, isDrivable, RoadNetwork, ROAD_OFFSET, roadWidth, VEHICLE_HALF_WIDTH, type OsmData, type OsmWay, type RoadSegment } from '../src/roads';
 import { createVehicle, Input, stepVehicle } from '../src/vehicle';
 import { roadPolygons, roadVertices } from '../src/scene';
 
-const terrain = new Terrain(elevation, provenance.origin);
-const segments = extractRoads(osm as OsmData, provenance.bounds, provenance.origin);
-const network = new RoadNetwork(segments);
 const flat = new Terrain({ cols: 2, rows: 2, west: -0.01, north: 0.01, stepLon: 0.02, stepLat: 0.02, values: [0, 0, 0, 0] }, { lon: 0, lat: 0 });
 const segment = (ax: number, az: number, bx: number, bz: number, width = 8): RoadSegment => ({
   a: { x: ax, z: az }, b: { x: bx, z: bz }, width, name: 'Test road', wayId: 1, highway: 'residential',
@@ -25,7 +20,7 @@ const neutral = { throttle: 0, steer: 0, brake: false };
 describe('real geographic data', () => {
   it('contains bounded non-flat real samples, source date and attribution', () => {
     expect(elevation.values).toHaveLength(elevation.cols * elevation.rows);
-    expect(Math.max(...elevation.values) - Math.min(...elevation.values)).toBeGreaterThan(30);
+    expect(provenance.elevation.max - provenance.elevation.min).toBeGreaterThan(30);
     expect(provenance.roads.rawSha256).toHaveLength(64);
     expect(createHash('sha256').update(readFileSync('public/data/osm-source.json')).digest('hex')).toBe(provenance.roads.rawSha256);
     expect(provenance.elevation.product).toContain('DSM');
@@ -37,16 +32,19 @@ describe('real geographic data', () => {
     expect(elevation.north).toBeCloseTo(42 - provenance.elevation.pixelWindow[1] / 3600, 10);
   });
   it('projects east to +x, north to -z and roundtrips coordinates', () => {
-    const p = project(28.9777, 41.0148, provenance.origin);
+    const east = provenance.origin.lon + 0.0037, north = provenance.origin.lat + 0.00115;
+    const p = project(east, north, provenance.origin);
     expect(p.x).toBeGreaterThan(0); expect(p.z).toBeLessThan(0);
-    expect(unproject(p, provenance.origin).lon).toBeCloseTo(28.9777, 10);
-    expect(unproject(p, provenance.origin).lat).toBeCloseTo(41.0148, 10);
+    expect(unproject(p, provenance.origin).lon).toBeCloseTo(east, 10);
+    expect(unproject(p, provenance.origin).lat).toBeCloseTo(north, 10);
   });
   it('interpolates all sample centres exactly and refuses missing/out-of-bounds data', () => {
+    let error = 0;
     for (let r = 0; r < elevation.rows; r++) for (let c = 0; c < elevation.cols; c++) {
       const p = terrain.vertex(c, r);
-      expect(terrain.height(p.x, p.z)).toBeCloseTo(elevation.values[r * elevation.cols + c], 6);
+      error = Math.max(error, Math.abs(terrain.height(p.x, p.z) - elevation.values[r * elevation.cols + c]));
     }
+    expect(error).toBeLessThan(1e-6);
     expect(() => terrain.height(1e6, 1e6)).toThrow('outside');
     expect(() => new Terrain({ ...elevation, values: [NaN] }, provenance.origin)).toThrow('Invalid');
   });
@@ -63,23 +61,18 @@ describe('real geographic data', () => {
 });
 
 describe('connected drivable surfaces', () => {
-  it('selects a substantial actual connected road graph around Sirkeci and Eminönü', () => {
-    expect(network.totalLength).toBeGreaterThan(3000);
-    expect(segments.some(s => s.name.includes('Ankara'))).toBe(true);
-    for (const [lon, lat] of [[28.9777, 41.0143], [28.9711, 41.0164]]) {
+  it('selects a substantial actual connected road graph around both Ihlamur pavilions', () => {
+    expect(network.totalLength).toBeGreaterThan(100000);
+    expect(segments.some(s => s.name.includes('Ihlamur'))).toBe(true);
+    for (const [lon, lat] of [[29.0011982, 41.0507128], [29.0019116, 41.0512476]]) {
       expect(network.nearest(project(lon, lat, provenance.origin)).distance).toBeLessThan(150);
     }
-    const visited = new Set<number>([0]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      segments.forEach((s, i) => {
-        if (visited.has(i)) return;
-        if ([...visited].some(j => [segments[j].a, segments[j].b].some(p =>
-          Math.hypot(s.a.x - p.x, s.a.z - p.z) < 0.001 || Math.hypot(s.b.x - p.x, s.b.z - p.z) < 0.001))) {
-          visited.add(i); changed = true;
-        }
-      });
+    const adjacency = new Map<string, number[]>(), key = (p: { x: number; z: number }) => `${p.x.toFixed(4)},${p.z.toFixed(4)}`;
+    segments.forEach((s, i) => { for (const p of [s.a, s.b]) { const k = key(p), list = adjacency.get(k) || []; list.push(i); adjacency.set(k, list); } });
+    const visited = new Set<number>(), pending = [0];
+    while (pending.length) {
+      const i = pending.pop()!; if (visited.has(i)) continue; visited.add(i);
+      for (const p of [segments[i].a, segments[i].b]) for (const j of adjacency.get(key(p)) || []) if (!visited.has(j)) pending.push(j);
     }
     expect(visited.size).toBe(segments.length);
   });
@@ -93,12 +86,7 @@ describe('connected drivable surfaces', () => {
     expect(roadWidth({ highway: 'secondary', lanes: '3' })).toBeCloseTo(9.6);
   });
   it('keeps every road capsule and safe spawn inside elevation coverage', () => {
-    for (const s of segments) for (const p of [s.a, s.b]) {
-      expect(p.x - s.width / 2).toBeGreaterThan(terrain.min.x);
-      expect(p.x + s.width / 2).toBeLessThan(terrain.max.x);
-      expect(p.z - s.width / 2).toBeGreaterThan(terrain.min.z);
-      expect(p.z + s.width / 2).toBeLessThan(terrain.max.z);
-    }
+    expect(segments.every(s => [s.a, s.b].every(p => p.x - s.width / 2 > terrain.min.x && p.x + s.width / 2 < terrain.max.x && p.z - s.width / 2 > terrain.min.z && p.z + s.width / 2 < terrain.max.z))).toBe(true);
     expect(network.fits(network.spawn(provenance.origin))).toBe(true);
   });
   it('leaves junction interiors open and unions visible surfaces without duplicate overlaps', () => {

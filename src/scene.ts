@@ -6,10 +6,12 @@ import { ROAD_OFFSET, type RoadNetwork, type RoadSegment } from './roads';
 import { vehicleBasis, type VehicleState } from './vehicle';
 import { asphaltTextures, asphaltUV, ASPHALT_TILE_METRES } from './asphalt';
 import { addCar as addDetailedCar, type Wheel } from './car';
+import { RoadSurface } from './surface';
+import { WorldRenderer, type WorldManifest } from './world';
 
 export function palette(): Record<string, THREE.Color> {
   const style = getComputedStyle(document.documentElement);
-  return Object.fromEntries(['bg', 'bg-elevated', 'surface', 'surface-soft', 'border', 'border-strong', 'text', 'text-muted', 'accent', 'accent-fg', 'link']
+  return Object.fromEntries(['bg', 'bg-elevated', 'surface', 'surface-soft', 'border', 'border-strong', 'text', 'text-muted', 'accent', 'accent-fg', 'link', 'success']
     .map(name => [name, new THREE.Color(style.getPropertyValue(`--cp-${name}`).trim())]));
 }
 
@@ -100,7 +102,7 @@ export function roadMarkings(roads: RoadNetwork): { polygons: MultiPolygon; cent
   for (const segment of roads.segments) {
     const dx = segment.b.x - segment.a.x, dz = segment.b.z - segment.a.z;
     const length = Math.hypot(dx, dz);
-    const phase = phases.get(segment.wayId) || 0;
+    const phase = segment.phase ?? phases.get(segment.wayId) ?? 0;
     phases.set(segment.wayId, phase + length);
     if (segment.width < 7.5) continue;
     for (let dash = Math.floor(phase / 12) * 12; dash < phase + length; dash += 12) {
@@ -124,6 +126,11 @@ const geometryFrom = (vertices: number[]) => {
   geometry.computeVertexNormals();
   return geometry;
 };
+export function resolutionRatio(current: number, maximum: number, frameMs: number): number {
+  if (frameMs > 45) return Math.max(0.5, current * 0.8);
+  if (frameMs < 22) return Math.min(maximum, current + 0.05);
+  return current;
+}
 
 export class GameScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -139,19 +146,24 @@ export class GameScene {
   private readonly axisUp = new THREE.Vector3();
   private readonly axisForward = new THREE.Vector3();
   private roadMaxEdge = 0;
+  private readonly world?: WorldRenderer;
+  onError?: (error: unknown) => void;
   private cameraReady = false;
+  private frameMs = 16;
+  private qualityElapsed = 0;
+  private maximumPixelRatio = Math.min(window.devicePixelRatio, 1.75);
   private readonly look = new THREE.Vector3();
   overview = false;
 
-  constructor(container: HTMLElement, readonly terrain: Terrain, readonly roads: RoadNetwork) {
+  constructor(container: HTMLElement, readonly terrain: Terrain, readonly roads: RoadNetwork, manifest?: WorldManifest) {
     const p = palette();
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    this.renderer.setPixelRatio(this.maximumPixelRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.1;
-    this.renderer.domElement.setAttribute('aria-label', 'Eminönü–Sirkeci üç boyutlu sürüş alanı');
+    this.renderer.domElement.setAttribute('aria-label', 'Ihlamur Kasrı ve Beşiktaş üç boyutlu sürüş alanı');
     container.append(this.renderer.domElement);
     this.scene.background = p.bg;
     this.scene.fog = new THREE.Fog(p.bg, 380, 1600);
@@ -161,22 +173,23 @@ export class GameScene {
     sun.position.set(-200, 400, 150);
     this.scene.add(sun);
 
-    this.addTerrain(p);
-    const vertices = roadVertices(terrain, roadPolygons(roads.segments));
-    const roadGeometry = geometryFrom(vertices);
-    roadGeometry.setAttribute('uv', new THREE.BufferAttribute(asphaltUV(vertices), 2));
-    for (let i = 0; i < vertices.length; i += 9) for (const [a, b] of [[0, 3], [3, 6], [6, 0]]) {
-      this.roadMaxEdge = Math.max(this.roadMaxEdge, Math.hypot(vertices[i + a] - vertices[i + b], vertices[i + a + 2] - vertices[i + b + 2]));
-    }
     const base = p['text-muted'].clone().lerp(p['bg-elevated'], document.documentElement.dataset.theme === 'dark' ? 0.5 : 0);
     const textures = asphaltTextures(base, this.renderer.capabilities.getMaxAnisotropy());
-    this.roadMesh = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({
+    this.roadMesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({
       map: textures.map, roughnessMap: textures.grain, bumpMap: textures.grain, bumpScale: 0.018, roughness: 0.98,
       polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     }));
-    this.roadMesh.renderOrder = 1;
-    this.scene.add(this.roadMesh);
-    this.addMarkings(p);
+    if (terrain instanceof RoadSurface && manifest) {
+      this.world = new WorldRenderer(this.scene, terrain, roads, p, { polygons: roadPolygons, vertices: surfaceVertices, markings: roadMarkings }, manifest, this.roadMesh.material);
+      this.world.onError = error => { if (this.onError) this.onError(error); else console.error('Terrain worker failed:', error); };
+    } else {
+      this.addTerrain(p);
+      const vertices = roadVertices(terrain, roadPolygons(roads.segments));
+      this.roadMesh.geometry = geometryFrom(vertices);
+      this.roadMesh.geometry.setAttribute('uv', new THREE.BufferAttribute(asphaltUV(vertices), 2));
+      for (let i = 0; i < vertices.length; i += 9) for (const [a, b] of [[0, 3], [3, 6], [6, 0]]) this.roadMaxEdge = Math.max(this.roadMaxEdge, Math.hypot(vertices[i + a] - vertices[i + b], vertices[i + a + 2] - vertices[i + b + 2]));
+      this.roadMesh.renderOrder = 1; this.scene.add(this.roadMesh); this.addMarkings(p);
+    }
     this.wheels.push(...addDetailedCar(this.body, p));
     this.car.add(this.body);
     this.scene.add(this.car);
@@ -241,6 +254,9 @@ export class GameScene {
   }
 
   render(state: VehicleState, dt: number): void {
+    if (this.world?.needs(state)) this.world.update(state).catch(error => {
+      if (this.onError) this.onError(error); else console.error('OSM world could not update:', error);
+    });
     this.car.position.set(state.x, state.y, state.z);
     this.car.rotation.y = state.heading;
     const basis = vehicleBasis(state.pitch, state.roll);
@@ -271,12 +287,22 @@ export class GameScene {
     this.renderer.render(this.scene, this.camera);
   }
   resetCamera(): void { this.cameraReady = false; }
+  trackFrame(milliseconds: number): void {
+    this.frameMs += (Math.min(250, milliseconds) - this.frameMs) * 0.05;
+    this.qualityElapsed += milliseconds;
+    if (this.qualityElapsed < 1500) return;
+    this.qualityElapsed = 0;
+    const current = this.renderer.getPixelRatio(), next = resolutionRatio(current, this.maximumPixelRatio, this.frameMs);
+    if (Math.abs(next - current) > 0.001) this.renderer.setPixelRatio(next);
+  }
+  async prepare(point: Point): Promise<void> { await this.world?.update(point); }
 
   readRenderState(state: VehicleState) {
     const rotation = this.body.getWorldQuaternion(new THREE.Quaternion());
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(rotation);
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(rotation);
-    const marks = this.markingCenters.flatMap(point => {
+    const world = this.world?.diagnostics();
+    const marks = (world?.markings || this.markingCenters).flatMap(point => {
       const ahead = (point.x - state.x) * Math.sin(state.heading) + (point.z - state.z) * Math.cos(state.heading);
       if (ahead < 5 || ahead > 70) return [];
       const projected = new THREE.Vector3(point.x, this.terrain.height(point.x, point.z) + ROAD_OFFSET + MARKING_LIFT, point.z).project(this.camera);
@@ -284,10 +310,18 @@ export class GameScene {
       return [{ x: (projected.x + 1) / 2, y: (1 - projected.y) / 2, ahead }];
     });
     return {
-      roadTriangles: this.roadMesh.geometry.getAttribute('position').count / 3, roadMaxEdge: this.roadMaxEdge,
+      roadTriangles: world?.roadTriangles ?? this.roadMesh.geometry.getAttribute('position').count / 3, roadMaxEdge: world?.roadMaxEdge ?? this.roadMaxEdge,
       asphaltTextured: this.roadMesh.material.map !== null, asphaltTileMetres: ASPHALT_TILE_METRES,
       forward: forward.toArray(), right: right.toArray(), carParts: this.body.children.length,
       frontWheelSteer: this.wheels.find(w => w.front)?.pivot.rotation.y, forwardMarkings: marks,
+      activeChunks: world?.activeChunks, activeBuildings: world?.activeBuildings, activeTrees: world?.activeTrees, activeMappedTrees: world?.activeMappedTrees,
+      activeInferredTrees: world?.activeInferredTrees, sidewalksMapped: world?.sidewalksMapped, sidewalksInferred: world?.sidewalksInferred, palaceBuildings: world?.palaceBuildings,
+      drawCalls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
+      chunkCenter: world?.chunkCenter, loadingChunks: world?.loadingChunks,
+      chunkError: world?.chunkError,
+      focusTilesLoaded: world?.focusTilesLoaded,
+      pixelRatio: this.renderer.getPixelRatio(),
+      targetChunkCenter: this.world ? `${Math.floor((state.x - this.terrain.min.x) / 192)}_${Math.floor((state.z - this.terrain.min.z) / 192)}` : undefined,
     };
   }
 }

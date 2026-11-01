@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="" />
-  <title>Twin Game · Eminönü–Sirkeci</title>
+  <title>Twin Game · Ihlamur Kasrı–Beşiktaş</title>
   <script>
     (() => {
       const param = new URLSearchParams(window.location.search).get("scoutTheme");
@@ -162,16 +162,16 @@
     </header>
     <section id="welcome" aria-labelledby="welcome-title">
       <p class="eyebrow">Gerçek yollar. Kaynaklı arazi.</p>
-      <h1 id="welcome-title">Eminönü<br /><span>— Sirkeci.</span></h1>
-      <p>Şehri yalnızca yolları ve eğimleriyle keşfet. Ankara Caddesi’nden kıyıya veya iç sokakların yokuşlarına; rota senin.</p>
-      <p>Ok tuşlarıyla sür. Binalar, trafik ve yarış yok. Yaklaşık 30 m kaynaklı arazi; sürüş için yumuşatılmış yol kotları ve 3 m yol ağı.</p>
+      <h1 id="welcome-title">Ihlamur Kasrı<br /><span>— Beşiktaş.</span></h1>
+      <p>OSM'deki gerçek Ihlamur Kasrı konumunu merkez alan <strong>5 km yarıçaplı</strong> bölge. Binalar, bahçeler, yaya yolları ve ağaçlarla şehri keşfet.</p>
+      <p>Ok tuşlarıyla sür. Yaklaşık 30 m kaynaklı arazi, yumuşatılmış yol kotları ve yakında 3 m yol ağı. Detaylar yakındaki parçalarda yüklenir; trafik ve yarış yok.</p>
       <button id="start-button" class="primary" disabled>Sürüşe başla →</button>
       <p id="load-status" role="status" aria-live="polite">Yerel yol ve yükselti verileri yükleniyor…</p>
     </section>
     <section id="paused" aria-label="Sürüş duraklatıldı"><h2>Kısa bir mola.</h2><button id="resume-button" class="primary">Sürüşe devam et</button></section>
     <div class="bottom">
       <section class="drive-hud" aria-label="Sürüş göstergeleri">
-        <div class="road-info"><span class="road-icon" aria-hidden="true">↗</span><div><p class="eyebrow">Şu an bulunduğun yol</p><div id="road-name">Ankara Caddesi</div></div></div>
+        <div class="road-info"><span class="road-icon" aria-hidden="true">↗</span><div><p class="eyebrow">Şu an bulunduğun yol</p><div id="road-name">Ihlamur çevresi</div></div></div>
         <div class="instruments">
           <div class="speed"><span id="speed">00</span><span class="unit">km/sa</span></div>
           <div class="stat" title="Kaynak DSM'den türetilmiş, sürüş için düzenlenmiş yol yüksekliği; ölçülmüş sokak kotu değildir."><strong id="altitude">—</strong><span class="unit"> m</span><p class="eyebrow">Yol kotu*</p></div>
@@ -183,7 +183,7 @@
         </div>
       </section>
       <aside class="map-card" aria-label="Konum haritası">
-        <div class="map-heading">Eminönü — Sirkeci <span>K ↑</span><button id="map-camera-button" aria-label="Kamera görünümünü değiştir" title="Kamera görünümünü değiştir" disabled>↗</button></div>
+        <div class="map-heading">Ihlamur · 5 km yarıçap <span>K ↑</span><button id="map-camera-button" aria-label="Kamera görünümünü değiştir" title="Kamera görünümünü değiştir" disabled>↗</button></div>
         <canvas id="minimap" width="460" height="340" aria-label="Gerçek yol ağı ve araç konumu"></canvas>
         <div class="map-foot"><span><span class="legend-dot">●</span> sen buradasın</span><span id="network-length">yerel yol ağı</span></div>
       </aside>
@@ -195,7 +195,10 @@
     <h3>Yollar · OpenStreetMap</h3>
     <p>© OpenStreetMap contributors. <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">ODbL 1.0</a>. <span id="data-date"></span> tarihli yerel veri. En büyük bağlı, motorlu araç yolu bileşeni kullanılır. Yaya yolları, köprüler, tüneller ve özel erişim yolları hariçtir. Dar yollar oynanabilirlik için en az 6,4 m genişliğe getirilir; tek yön kuralları ve gerçek trafik uygulanmaz.</p>
     <h3>Yükselti · Copernicus GLO-30 Public</h3>
-    <p>Yaklaşık 30 m örnek aralıklı DSM; çıplak zemin modeli değildir. Bina ve ağaç etkileri veride kalabilir, ancak bina geometrisi çizilmez. WGS84 konum, EGM2008 ortometrik yükseklik. Kaynak ağırlıkla 2011–2015 ölçümleridir; güncel sokak kotu garantisi yoktur. İnterpolasyon daha yüksek ölçüm çözünürlüğü sağlamaz.</p>
+    <p>Yaklaşık 30 m örnek aralıklı DSM; çıplak zemin modeli değildir. Bina ve ağaç etkileri kaynakta kalabilir. WGS84 konum, EGM2008 ortometrik yükseklik. Kaynak ağırlıkla 2011–2015 ölçümleridir; güncel sokak kotu garantisi yoktur. 3 m çizim ağı yeni ölçüm ayrıntısı sağlamaz.</p>
+    <p>5 km ifadesi yarıçap olarak yorumlandı; merkez OSM way/312484207, 41.0507128° N / 29.0011982° E. Bina izleri OSM'dir; height etiketi varsa kullanılır, kat sayısı 3 m/kat ile çevrilir, yoksa 9 m tahmin edilir. Bina temelleri araziye oturur; genişletilmiş sürüş yolu için kesişen bina parçaları kırpılabilir. Özel saray modeli veya fotogerçekçi mimari değildir.</p>
+    <p>İşlenmiş natural=tree konumları aynen kullanılır. Ağaç sıralarında konumlar çizgiden türetilir. Ağaç bilgisi olmayan uygun park/orman/bahçelerde sabit tohumlu tahmini ağaçlar üretilir; avlular, su, bina, yol, kaldırım ve yaya yolları korunur. Çim/çayır ve spor sahaları rastgele ağaçlandırılmaz. Kaldırım yeri etiketlerden veya açıkça tahmini yol kenarlarından, genişliği 1.5 m ve bordürü 0.12 m varsayımından türetilir.</p>
+    <p id="detail-counts"></p>
     <p class="notice">produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved</p>
     <p><a href="https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM" target="_blank" rel="noreferrer">Resmî ürün, lisans ve doğruluk bilgileri</a>. Bu küçük arazi kesiti İBB’nin hassas DTM ürünü değildir. İBB servisleri erişim yetkisi/API anahtarı istediğinden kullanılmadı.</p>
     <h3>Sürüş modeli</h3>

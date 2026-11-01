@@ -3,7 +3,9 @@ import polygonClipping, { type MultiPolygon, type Polygon } from 'polygon-clippi
 import earcut, { flatten } from 'earcut';
 import { Terrain, type Point } from './geo';
 import { ROAD_OFFSET, type RoadNetwork, type RoadSegment } from './roads';
-import type { VehicleState } from './vehicle';
+import { vehicleBasis, type VehicleState } from './vehicle';
+import { asphaltTextures, asphaltUV, ASPHALT_TILE_METRES } from './asphalt';
+import { addCar as addDetailedCar, type Wheel } from './car';
 
 export function palette(): Record<string, THREE.Color> {
   const style = getComputedStyle(document.documentElement);
@@ -41,30 +43,41 @@ export function roadPolygons(segments: RoadSegment[]): MultiPolygon {
 }
 
 export function roadVertices(terrain: Terrain, roads: MultiPolygon): number[] {
+  return surfaceVertices(terrain, roads, ROAD_OFFSET);
+}
+
+export function surfaceVertices(terrain: Terrain, polygons: MultiPolygon, lift: number): number[] {
   const vertices: number[] = [];
-  const boxes = roads.map(p => ({
+  const boxes = polygons.map(p => ({
     polygon: p,
     minX: Math.min(...p[0].map(v => v[0])), maxX: Math.max(...p[0].map(v => v[0])),
     minZ: Math.min(...p[0].map(v => v[1])), maxZ: Math.max(...p[0].map(v => v[1])),
   }));
-  for (let r = 0; r < terrain.data.rows - 1; r++) {
-    for (let c = 0; c < terrain.data.cols - 1; c++) {
-      const a = terrain.vertex(c, r), b = terrain.vertex(c + 1, r);
-      const d = terrain.vertex(c, r + 1), e = terrain.vertex(c + 1, r + 1);
-      const nearby: MultiPolygon = boxes.filter(p => p.maxX >= a.x && p.minX <= e.x && p.maxZ >= a.z && p.minZ <= e.z).map(p => p.polygon);
+  for (let tileRow = 0; tileRow < terrain.data.rows - 1; tileRow += 12) {
+    for (let tileCol = 0; tileCol < terrain.data.cols - 1; tileCol += 12) {
+      const lastCol = Math.min(tileCol + 12, terrain.data.cols - 1);
+      const lastRow = Math.min(tileRow + 12, terrain.data.rows - 1);
+      const min = terrain.vertex(tileCol, tileRow), max = terrain.vertex(lastCol, lastRow);
+      const nearby: MultiPolygon = boxes.filter(p => p.maxX >= min.x && p.minX <= max.x && p.maxZ >= min.z && p.minZ <= max.z).map(p => p.polygon);
       if (!nearby.length) continue;
-      for (const tri of [[a, b, e], [a, e, d]]) {
-        const ring: [number, number][] = tri.map(p => [p.x, p.z]);
-        ring.push(ring[0]);
-        const clipped = polygonClipping.intersection(nearby, [ring]);
-        for (const polygon of clipped) {
-          const flat = flatten(polygon);
-          const indices = earcut(flat.vertices, flat.holes, 2);
-          for (let i = 0; i < indices.length; i += 3) {
-            // Reverse x/z polygon winding for upward-facing triangles in x/y/z.
-            for (const index of [indices[i], indices[i + 2], indices[i + 1]]) {
-              const x = flat.vertices[index * 2], z = flat.vertices[index * 2 + 1];
-              vertices.push(x, terrain.height(x, z) + ROAD_OFFSET, z);
+      const local = polygonClipping.intersection(nearby, [[[min.x, min.z], [max.x, min.z], [max.x, max.z], [min.x, max.z], [min.x, min.z]]]);
+      if (!local.length) continue;
+      for (let r = tileRow; r < lastRow; r++) for (let c = tileCol; c < lastCol; c++) {
+        const a = terrain.vertex(c, r), b = terrain.vertex(c + 1, r);
+        const d = terrain.vertex(c, r + 1), e = terrain.vertex(c + 1, r + 1);
+        for (const tri of [[a, b, e], [a, e, d]]) {
+          const ring: [number, number][] = tri.map(p => [p.x, p.z]);
+          ring.push(ring[0]);
+          const clipped = polygonClipping.intersection(local, [ring]);
+          for (const polygon of clipped) {
+            const flat = flatten(polygon);
+            const indices = earcut(flat.vertices, flat.holes, 2);
+            for (let i = 0; i < indices.length; i += 3) {
+              // Reverse x/z polygon winding for upward-facing triangles in x/y/z.
+              for (const index of [indices[i], indices[i + 2], indices[i + 1]]) {
+                const x = flat.vertices[index * 2], z = flat.vertices[index * 2 + 1];
+                vertices.push(x, terrain.height(x, z) + lift, z);
+              }
             }
           }
         }
@@ -72,6 +85,37 @@ export function roadVertices(terrain: Terrain, roads: MultiPolygon): number[] {
     }
   }
   return vertices;
+}
+
+export const MARKING_LIFT = 0.025;
+export function roadMarkings(roads: RoadNetwork): { polygons: MultiPolygon; centers: Point[] } {
+  const polygons: Polygon[] = [], centers: Point[] = [];
+  const counts = new Map<string, { point: Point; count: number }>();
+  for (const segment of roads.segments) for (const point of [segment.a, segment.b]) {
+    const key = `${point.x.toFixed(3)},${point.z.toFixed(3)}`;
+    counts.set(key, { point, count: (counts.get(key)?.count || 0) + 1 });
+  }
+  const junctions = [...counts.values()].filter(p => p.count >= 3);
+  const phases = new Map<number, number>();
+  for (const segment of roads.segments) {
+    const dx = segment.b.x - segment.a.x, dz = segment.b.z - segment.a.z;
+    const length = Math.hypot(dx, dz);
+    const phase = phases.get(segment.wayId) || 0;
+    phases.set(segment.wayId, phase + length);
+    if (segment.width < 7.5) continue;
+    for (let dash = Math.floor(phase / 12) * 12; dash < phase + length; dash += 12) {
+      const start = Math.max(0, dash - phase), end = Math.min(length, dash + 4 - phase);
+      if (end <= start) continue;
+      const center = { x: segment.a.x + dx * (start + end) / 2 / length, z: segment.a.z + dz * (start + end) / 2 / length };
+      if (junctions.some(j => Math.hypot(j.point.x - center.x, j.point.z - center.z) < 10)) continue;
+      const a = { x: segment.a.x + dx * start / length, z: segment.a.z + dz * start / length };
+      const b = { x: segment.a.x + dx * end / length, z: segment.a.z + dz * end / length };
+      const nx = -dz / length * 0.09, nz = dx / length * 0.09;
+      polygons.push([[[a.x + nx, a.z + nz], [a.x - nx, a.z - nz], [b.x - nx, b.z - nz], [b.x + nx, b.z + nz], [a.x + nx, a.z + nz]]]);
+      centers.push(center);
+    }
+  }
+  return { polygons: polygons.length ? polygonClipping.union(polygons[0], ...polygons.slice(1)) : [], centers };
 }
 
 const geometryFrom = (vertices: number[]) => {
@@ -87,7 +131,14 @@ export class GameScene {
   readonly camera = new THREE.PerspectiveCamera(55, 1, 0.75, 2200);
   readonly car = new THREE.Group();
   private readonly body = new THREE.Group();
-  private readonly wheels: THREE.Mesh[] = [];
+  private readonly wheels: Wheel[] = [];
+  readonly roadMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  private readonly markingCenters: Point[] = [];
+  private readonly bodyMatrix = new THREE.Matrix4();
+  private readonly axisRight = new THREE.Vector3();
+  private readonly axisUp = new THREE.Vector3();
+  private readonly axisForward = new THREE.Vector3();
+  private roadMaxEdge = 0;
   private cameraReady = false;
   private readonly look = new THREE.Vector3();
   overview = false;
@@ -110,42 +161,24 @@ export class GameScene {
     sun.position.set(-200, 400, 150);
     this.scene.add(sun);
 
-    const positions: number[] = [], colors: number[] = [], contours: number[] = [];
-    for (let r = 0; r < terrain.data.rows - 1; r++) {
-      for (let c = 0; c < terrain.data.cols - 1; c++) {
-        const a = terrain.vertex(c, r), b = terrain.vertex(c + 1, r);
-        const d = terrain.vertex(c, r + 1), e = terrain.vertex(c + 1, r + 1);
-        for (const tri of [[a, e, b], [a, d, e]]) {
-          const points = tri.map(v => new THREE.Vector3(v.x, terrain.height(v.x, v.z), v.z));
-          for (const v of points) {
-            positions.push(v.x, v.y, v.z);
-            const color = v.y < 0.5 ? p['border'].clone().lerp(p.link, 0.12)
-              : p['border'].clone().lerp(p['border-strong'], Math.min(0.65, 0.15 + v.y / 140));
-            colors.push(color.r, color.g, color.b);
-          }
-          for (let level = 10; level <= 80; level += 10) {
-            const crossings: THREE.Vector3[] = [];
-            for (let j = 0; j < 3; j++) {
-              const u = points[j], v = points[(j + 1) % 3];
-              if ((u.y < level) !== (v.y < level)) crossings.push(u.clone().lerp(v, (level - u.y) / (v.y - u.y)));
-            }
-            if (crossings.length === 2) for (const v of crossings) contours.push(v.x, v.y + 0.035, v.z);
-          }
-        }
-      }
+    this.addTerrain(p);
+    const vertices = roadVertices(terrain, roadPolygons(roads.segments));
+    const roadGeometry = geometryFrom(vertices);
+    roadGeometry.setAttribute('uv', new THREE.BufferAttribute(asphaltUV(vertices), 2));
+    for (let i = 0; i < vertices.length; i += 9) for (const [a, b] of [[0, 3], [3, 6], [6, 0]]) {
+      this.roadMaxEdge = Math.max(this.roadMaxEdge, Math.hypot(vertices[i + a] - vertices[i + b], vertices[i + a + 2] - vertices[i + b + 2]));
     }
-    const groundGeometry = geometryFrom(positions);
-    groundGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    this.scene.add(new THREE.Mesh(groundGeometry, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true })));
-    const contourGeometry = new THREE.BufferGeometry();
-    contourGeometry.setAttribute('position', new THREE.Float32BufferAttribute(contours, 3));
-    this.scene.add(new THREE.LineSegments(contourGeometry, new THREE.LineBasicMaterial({ color: p['border-strong'], transparent: true, opacity: 0.32 })));
-    this.scene.add(new THREE.Mesh(
-      geometryFrom(roadVertices(terrain, roadPolygons(roads.segments))),
-      new THREE.MeshStandardMaterial({ color: p['text-muted'], roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
-    ));
+    const base = p['text-muted'].clone().lerp(p['bg-elevated'], document.documentElement.dataset.theme === 'dark' ? 0.5 : 0);
+    const textures = asphaltTextures(base, this.renderer.capabilities.getMaxAnisotropy());
+    this.roadMesh = new THREE.Mesh(roadGeometry, new THREE.MeshStandardMaterial({
+      map: textures.map, roughnessMap: textures.grain, bumpMap: textures.grain, bumpScale: 0.018, roughness: 0.98,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+    }));
+    this.roadMesh.renderOrder = 1;
+    this.scene.add(this.roadMesh);
     this.addMarkings(p);
-    this.addCar(p);
+    this.wheels.push(...addDetailedCar(this.body, p));
+    this.car.add(this.body);
     this.scene.add(this.car);
     window.addEventListener('resize', () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -157,88 +190,66 @@ export class GameScene {
   }
 
   private addMarkings(p: Record<string, THREE.Color>): void {
-    const vertices: number[] = [];
-    const junctions = new Map<string, { p: Point; count: number }>();
-    for (const s of this.roads.segments) for (const v of [s.a, s.b]) {
-      const k = `${v.x.toFixed(3)},${v.z.toFixed(3)}`;
-      const existing = junctions.get(k);
-      junctions.set(k, { p: v, count: (existing?.count || 0) + 1 });
+    const marks = roadMarkings(this.roads);
+    this.markingCenters.push(...marks.centers);
+    const white = document.documentElement.dataset.theme === 'dark' ? p.text : p.surface;
+    const paint = new THREE.Mesh(geometryFrom(surfaceVertices(this.terrain, marks.polygons, ROAD_OFFSET + MARKING_LIFT)), new THREE.MeshBasicMaterial({
+      color: white, toneMapped: false, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
+    paint.renderOrder = 2;
+    this.scene.add(paint);
+  }
+
+  private addTerrain(p: Record<string, THREE.Color>): void {
+    const terrain = this.terrain, { cols, rows, values } = terrain.data;
+    const positions = new Float32Array(cols * rows * 3), colors = new Float32Array(positions.length);
+    const indices = new Uint32Array((cols - 1) * (rows - 1) * 6), contours: number[] = [];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c, v = terrain.vertex(c, r), height = values[i];
+      positions.set([v.x, height, v.z], i * 3);
+      const color = height < 0.5 ? p.border.clone().lerp(p.link, 0.12)
+        : p.border.clone().lerp(p['border-strong'], Math.min(0.65, 0.15 + height / 140));
+      colors.set([color.r, color.g, color.b], i * 3);
     }
-    const busy = [...junctions.values()].filter(v => v.count >= 3);
-    for (const s of this.roads.segments) {
-      if (s.width < 7.5) continue;
-      const dx = s.b.x - s.a.x, dz = s.b.z - s.a.z;
-      const length = Math.hypot(dx, dz);
-      for (let dist = 2; dist + 4 < length; dist += 12) {
-        const center = { x: s.a.x + dx * (dist + 2) / length, z: s.a.z + dz * (dist + 2) / length };
-        if (busy.some(v => Math.hypot(v.p.x - center.x, v.p.z - center.z) < 10)) continue;
-        for (let j = 0; j < 4; j++) {
-          const at = (dist + j) / length, end = (dist + j + 1) / length;
-          const a = { x: s.a.x + dx * at, z: s.a.z + dz * at };
-          const b = { x: s.a.x + dx * end, z: s.a.z + dz * end };
-          const pts = [
-            { x: a.x - dz / length * 0.12, z: a.z + dx / length * 0.12 },
-            { x: a.x + dz / length * 0.12, z: a.z - dx / length * 0.12 },
-            { x: b.x + dz / length * 0.12, z: b.z - dx / length * 0.12 },
-            { x: b.x - dz / length * 0.12, z: b.z + dx / length * 0.12 },
-          ];
-          for (const index of [0, 2, 1, 0, 3, 2]) {
-            const v = pts[index];
-            vertices.push(v.x, this.terrain.height(v.x, v.z) + ROAD_OFFSET + 0.025, v.z);
+    let next = 0;
+    for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {
+      const a = r * cols + c, b = a + 1, d = a + cols, e = d + 1;
+      indices.set([a, e, b, a, d, e], next); next += 6;
+      for (const tri of [[a, e, b], [a, d, e]]) {
+        const min = Math.min(...tri.map(i => values[i])), max = Math.max(...tri.map(i => values[i]));
+        for (let level = Math.max(10, Math.ceil(min / 10) * 10); level <= max; level += 10) {
+          const crossings: number[] = [];
+          for (let j = 0; j < 3; j++) {
+            const u = tri[j], v = tri[(j + 1) % 3];
+            if ((values[u] < level) === (values[v] < level)) continue;
+            const t = (level - values[u]) / (values[v] - values[u]);
+            crossings.push(positions[u * 3] + (positions[v * 3] - positions[u * 3]) * t, level + 0.035, positions[u * 3 + 2] + (positions[v * 3 + 2] - positions[u * 3 + 2]) * t);
           }
+          if (crossings.length === 6) contours.push(...crossings);
         }
       }
     }
-    this.scene.add(new THREE.Mesh(geometryFrom(vertices), new THREE.MeshBasicMaterial({ color: p['surface'], side: THREE.DoubleSide })));
-  }
-
-  private addCar(p: Record<string, THREE.Color>): void {
-    const paint = new THREE.MeshStandardMaterial({ color: p.accent, roughness: 0.35, metalness: 0.15 });
-    const glass = new THREE.MeshStandardMaterial({ color: p['bg-elevated'], roughness: 0.25, metalness: 0.4 });
-    const trim = new THREE.MeshStandardMaterial({ color: p['border-strong'], roughness: 0.8 });
-    const box = (w: number, h: number, l: number, y: number, z: number, material: THREE.Material) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, l), material);
-      mesh.position.set(0, y, z);
-      this.body.add(mesh);
-    };
-    box(1.65, 0.48, 3.4, 0.66, 0, paint);
-    box(1.4, 0.5, 1.6, 1.12, -0.15, glass);
-    box(1.46, 0.1, 1.64, 1.42, -0.15, paint);
-    box(1.7, 0.18, 0.15, 0.48, -1.72, trim);
-    box(1.7, 0.18, 0.15, 0.48, 1.72, trim);
-    const headlight = new THREE.MeshBasicMaterial({ color: p.surface });
-    for (const x of [-0.56, 0.56]) {
-      const light = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.16, 0.03), headlight);
-      light.position.set(x, 0.7, 1.715);
-      this.body.add(light);
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.12, 0.03), new THREE.MeshBasicMaterial({ color: p.accent }));
-      tail.position.set(x, 0.7, -1.715);
-      this.body.add(tail);
-    }
-    for (const x of [-0.85, 0.85]) for (const z of [-1.1, 1.1]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 0.22, 16), new THREE.MeshStandardMaterial({ color: p['bg-elevated'] }));
-      wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(x, 0.36, z);
-      this.wheels.push(wheel);
-      this.body.add(wheel);
-    }
-    this.car.add(this.body);
-    const shadow = new THREE.Mesh(
-      new THREE.CircleGeometry(1.6, 32),
-      new THREE.MeshBasicMaterial({ color: p['bg-elevated'], transparent: true, opacity: 0.22, depthWrite: false }),
-    );
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = 0.02;
-    shadow.scale.set(0.7, 1.3, 1);
-    this.car.add(shadow);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    g.setIndex(new THREE.BufferAttribute(indices, 1)); g.computeVertexNormals();
+    this.scene.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 })));
+    const lines = new THREE.BufferGeometry();
+    lines.setAttribute('position', new THREE.Float32BufferAttribute(contours, 3));
+    this.scene.add(new THREE.LineSegments(lines, new THREE.LineBasicMaterial({ color: p['border-strong'], transparent: true, opacity: 0.32 })));
   }
 
   render(state: VehicleState, dt: number): void {
     this.car.position.set(state.x, state.y, state.z);
     this.car.rotation.y = state.heading;
-    this.body.rotation.x = -state.pitch;
-    this.body.rotation.z = state.roll;
-    for (const wheel of this.wheels) wheel.rotation.x += state.speed * dt / 0.36;
+    const basis = vehicleBasis(state.pitch, state.roll);
+    this.bodyMatrix.makeBasis(this.axisRight.set(...basis.right), this.axisUp.set(...basis.up), this.axisForward.set(...basis.forward));
+    this.body.quaternion.setFromRotationMatrix(this.bodyMatrix);
+    for (const wheel of this.wheels) {
+      wheel.pivot.rotation.y = wheel.front ? state.steering * 0.35 : 0;
+      wheel.spin.rotation.x += state.speed * dt / 0.34;
+    }
     const fx = Math.sin(state.heading), fz = Math.cos(state.heading);
     const compact = window.innerWidth <= 700;
     const chaseDistance = compact ? 17 : 15;
@@ -260,4 +271,23 @@ export class GameScene {
     this.renderer.render(this.scene, this.camera);
   }
   resetCamera(): void { this.cameraReady = false; }
+
+  readRenderState(state: VehicleState) {
+    const rotation = this.body.getWorldQuaternion(new THREE.Quaternion());
+    const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(rotation);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(rotation);
+    const marks = this.markingCenters.flatMap(point => {
+      const ahead = (point.x - state.x) * Math.sin(state.heading) + (point.z - state.z) * Math.cos(state.heading);
+      if (ahead < 5 || ahead > 70) return [];
+      const projected = new THREE.Vector3(point.x, this.terrain.height(point.x, point.z) + ROAD_OFFSET + MARKING_LIFT, point.z).project(this.camera);
+      if (Math.abs(projected.x) > 0.9 || Math.abs(projected.y) > 0.9 || Math.abs(projected.z) > 1) return [];
+      return [{ x: (projected.x + 1) / 2, y: (1 - projected.y) / 2, ahead }];
+    });
+    return {
+      roadTriangles: this.roadMesh.geometry.getAttribute('position').count / 3, roadMaxEdge: this.roadMaxEdge,
+      asphaltTextured: this.roadMesh.material.map !== null, asphaltTileMetres: ASPHALT_TILE_METRES,
+      forward: forward.toArray(), right: right.toArray(), carParts: this.body.children.length,
+      frontWheelSteer: this.wheels.find(w => w.front)?.pivot.rotation.y, forwardMarkings: marks,
+    };
+  }
 }

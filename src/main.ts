@@ -2,6 +2,7 @@ import { project, Terrain, type Bounds, type ElevationData, type Origin } from '
 import { extractRoads, RoadNetwork, type OsmData } from './roads';
 import { createVehicle, Input, stepVehicle } from './vehicle';
 import { GameScene, palette } from './scene';
+import { ROAD_GRID_METRES, RoadSurface } from './surface';
 
 function element<T extends HTMLElement>(id: string): T {
   const value = document.getElementById(id);
@@ -90,10 +91,11 @@ async function boot(): Promise<void> {
   const [osm, elevation, provenance] = await Promise.all([
     localJson<OsmData>('osm-source'), localJson<ElevationData>('elevation'), localJson<Provenance>('provenance'),
   ]);
-  const terrain = new Terrain(elevation, provenance.origin);
+  const sourceTerrain = new Terrain(elevation, provenance.origin);
   const roads = new RoadNetwork(extractRoads(osm, provenance.bounds, provenance.origin));
   status.textContent = 'Bağlı kavşaklar ve kaynaklı arazi hazırlanıyor…';
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const terrain = new RoadSurface(sourceTerrain, roads);
   const scene = new GameScene(element('world'), terrain, roads);
   const spawn = roads.spawn(provenance.origin);
   let state = createVehicle(spawn, terrain);
@@ -114,7 +116,7 @@ async function boot(): Promise<void> {
   cameraButton.disabled = false;
   resetButton.disabled = false;
   element<HTMLButtonElement>('map-camera-button').disabled = false;
-  status.textContent = `${(roads.totalLength / 1000).toFixed(1)} km bağlı yol · ${elevation.cols}×${elevation.rows} DSM örneği · çevrimdışı kaynaklar`;
+  status.textContent = `${(roads.totalLength / 1000).toFixed(1)} km bağlı yol · ${elevation.cols}×${elevation.rows} kaynak DSM · ${ROAD_GRID_METRES} m yol ağı · düzenlenmiş kotlar`;
   element('data-date').textContent = provenance.retrievedAt.slice(0, 10);
   element('network-length').textContent = `${(roads.totalLength / 1000).toFixed(1)} km yol`;
 
@@ -137,12 +139,12 @@ async function boot(): Promise<void> {
   background.fillStyle = css('surface-soft');
   background.fillRect(0, 0, map.width, map.height);
   for (let r = 0; r < elevation.rows - 1; r++) for (let c = 0; c < elevation.cols - 1; c++) {
-    const point = terrain.vertex(c, r);
+    const point = sourceTerrain.vertex(c, r);
     const at = mapPoint(point);
-    const value = terrain.height(point.x, point.z);
+    const value = sourceTerrain.height(point.x, point.z);
     const color = colors['surface-soft'].clone().lerp(colors.border, Math.min(0.8, 0.2 + Math.max(0, value) / 110));
     background.fillStyle = `#${color.getHexString()}`;
-    background.fillRect(at.x, at.y, terrain.dx * scale + 1, terrain.dz * scale + 1);
+    background.fillRect(at.x, at.y, sourceTerrain.dx * scale + 1, sourceTerrain.dz * scale + 1);
   }
   background.strokeStyle = css('text-muted');
   background.lineCap = 'round';
@@ -165,8 +167,9 @@ async function boot(): Promise<void> {
 
   // Read-only inspection surface for reproducible browser checks; never accepts commands.
   Object.defineProperty(window, 'twinGame', { value: Object.freeze({
-    readState: () => ({ ...state, started, paused, overview: scene.overview, onRoad: roads.fits(state), terrainHeight: terrain.height(state.x, state.z) }),
-    stats: Object.freeze({ segments: roads.segments.length, roadLength: roads.totalLength, elevationSamples: elevation.values.length }),
+    readState: () => ({ ...state, started, paused, overview: scene.overview, onRoad: roads.fits(state), roadHeight: terrain.height(state.x, state.z), terrainHeight: sourceTerrain.height(state.x, state.z) }),
+    readRenderState: () => scene.readRenderState(state),
+    stats: Object.freeze({ segments: roads.segments.length, roadLength: roads.totalLength, elevationSamples: elevation.values.length, surfaceGridMetres: ROAD_GRID_METRES }),
   }), configurable: true });
   scene.renderer.domElement.addEventListener('webglcontextlost', event => {
     event.preventDefault();

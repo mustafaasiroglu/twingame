@@ -4,6 +4,27 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
+function inspectRoadVisuals(page, whiteThreshold) {
+  return page.evaluate(threshold => new Promise(resolve => requestAnimationFrame(() => {
+    const details = window.twinGame.readRenderState();
+    const canvas = document.querySelector('#world canvas'), gl = canvas.getContext('webgl2');
+    const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+    gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    let visibleForwardMarks = 0;
+    for (const point of details.forwardMarkings) {
+      if (point.ahead < 8 || point.ahead > 50) continue;
+      const px = Math.round(point.x * canvas.width), py = Math.round((1 - point.y) * canvas.height);
+      let visible = false;
+      for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++) {
+        const index = ((py + oy) * canvas.width + px + ox) * 4;
+        if (pixels[index] > threshold && pixels[index + 1] > threshold && pixels[index + 2] > threshold) visible = true;
+      }
+      if (visible) visibleForwardMarks++;
+    }
+    resolve({ ...details, visibleForwardMarks });
+  })), whiteThreshold);
+}
+
 const url = 'http://127.0.0.1:5174';
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '5174', '--strictPort'], { stdio: 'pipe' });
 let serverLog = '';
@@ -34,13 +55,21 @@ try {
   const read = () => page.evaluate(() => window.twinGame.readState());
   const initial = await read();
   assert(!initial.paused && initial.onRoad);
+  const visual = await inspectRoadVisuals(page, 245);
+  assert(visual.visibleForwardMarks > 0, 'Lane paint must be visible 8–50 m ahead, before driving over it');
+  assert(visual.roadMaxEdge <= Math.sqrt(2) * 3 + 1e-5 && visual.roadTriangles > 10000, 'Road polygons must use the fine shared 3 m surface');
+  assert(visual.asphaltTextured && visual.asphaltTileMetres === 4);
+  assert(visual.carParts > 25, 'Vehicle must have detailed body, cabin, windows, wheels and lamps');
+  const gx = Math.tan(initial.roll), gz = Math.tan(initial.pitch);
+  const expectedRightY = gx / Math.sqrt((1 + gz * gz) * (1 + gx * gx + gz * gz));
+  assert(Math.abs(visual.forward[1] - Math.sin(initial.pitch)) < 1e-6 && Math.abs(visual.right[1] - expectedRightY) < 1e-6, 'Actual rendered vehicle axes must match the road tangent, not be flat or reversed');
   await page.keyboard.down('ArrowUp');
   await page.waitForFunction(() => window.twinGame.readState().distance > 3, null, { timeout: 15000, polling: 100 });
   await page.keyboard.up('ArrowUp');
   const driven = await read();
   assert(driven.distance > 2, 'ArrowUp must visibly move the vehicle');
   assert(driven.speed > 1 && driven.onRoad, 'Vehicle must accelerate on a road');
-  assert(Math.abs(driven.y - driven.terrainHeight - 0.08) < 1e-6);
+  assert(Math.abs(driven.y - driven.roadHeight - 0.08) < 1e-6);
   await page.keyboard.press('KeyP');
   const paused = await read();
   assert(paused.paused);
@@ -58,12 +87,14 @@ try {
   assert(Math.hypot(reset.x - initial.x, reset.z - initial.z) < 0.001);
   await page.keyboard.down('ArrowUp'); await page.keyboard.down('ArrowLeft');
   await page.waitForFunction(heading => window.twinGame.readState().heading > heading + 0.03, initial.heading, { timeout: 15000, polling: 100 });
+  assert((await page.evaluate(() => window.twinGame.readRenderState())).frontWheelSteer > 0, 'Front wheels must visibly steer with the input');
   await page.keyboard.up('ArrowLeft'); await page.keyboard.up('ArrowUp');
   assert((await read()).heading > initial.heading, 'ArrowLeft must change steering');
   await page.evaluate(() => window.dispatchEvent(new Event('blur')));
   assert((await read()).paused, 'Losing focus must pause and release inputs');
   await page.keyboard.press('KeyP');
   await page.keyboard.press('KeyR');
+  await page.waitForFunction(() => document.getElementById('speed').textContent === '00', null, { timeout: 10000, polling: 100 });
   await page.keyboard.press('KeyP');
   await page.evaluate(() => { document.getElementById('paused').style.display = 'none'; });
   await page.waitForTimeout(200);
@@ -83,6 +114,7 @@ try {
   await page.goto(`${url}/?scoutTheme=dark`);
   await page.waitForFunction(() => window.twinGame, null, { timeout: 60000, polling: 100 });
   await page.getByRole('button', { name: 'Sürüşe başla' }).click();
+  assert((await inspectRoadVisuals(page, 210)).visibleForwardMarks > 0, 'Forward paint must stay visible in dark theme too');
   await page.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-dark.png') });
   const stats = await page.evaluate(() => window.twinGame.stats);
   await page.close();
@@ -113,6 +145,7 @@ try {
   assert(mobileDriven.distance > 0.5 && mobileDriven.heading > mobileStart.heading, 'Two fingers must accelerate and steer together');
   assert(mobileDriven.onRoad);
   await mobile.getByRole('button', { name: 'Başa dön' }).tap();
+  await mobile.waitForFunction(() => document.getElementById('speed').textContent === '00', null, { timeout: 10000, polling: 100 });
   await mobile.screenshot({ path: path.join(screenshots, 'eminonu-sirkeci-mobile.png') });
   assert.equal(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await mobile.getByRole('button', { name: 'Kamera görünümünü değiştir' }).tap();
@@ -132,7 +165,7 @@ try {
   await failurePage.close();
   assert.deepEqual(external, [], 'Gameplay must use only persisted local data and assets');
   assert.deepEqual(errors, [], 'Browser must have no runtime/console errors');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['local-only requests', 'WebGL render', 'arrow acceleration', 'reverse', 'steering', 'ground height', 'pause/focus loss', 'reset', 'overview including touch', 'attribution', 'dark theme', 'mobile layout', 'multi-touch driving', 'graphics-context loss handling', 'explicit missing-elevation failure', 'zero unexpected browser errors'], screenshots, stats }, null, 2));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['local-only requests', 'WebGL render', 'forward-visible lane paint', '3 m road tessellation', 'procedural asphalt scale', 'detailed vehicle and correct lean', 'arrow acceleration', 'reverse', 'steering', 'engineered road height', 'pause/focus loss', 'reset', 'overview including touch', 'attribution', 'dark theme', 'mobile layout', 'multi-touch driving', 'graphics-context loss handling', 'explicit missing-elevation failure', 'zero unexpected browser errors'], render: { visibleForwardMarks: visual.visibleForwardMarks, roadTriangles: visual.roadTriangles, roadMaxEdge: visual.roadMaxEdge, carParts: visual.carParts }, screenshots, stats }, null, 2));
 } catch (error) {
   if (browser) {
     for (const context of browser.contexts()) for (const page of context.pages()) {

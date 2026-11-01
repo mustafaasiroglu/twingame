@@ -9,7 +9,7 @@ const widths: Record<string, number> = {
   tertiary: 8, tertiary_link: 7, residential: 7, unclassified: 7, living_street: 6.4, service: 6.4,
 };
 export const ROAD_OFFSET = 0.08;
-export const VEHICLE_RADIUS = 2;
+export const VEHICLE_RADIUS = 2.15;
 
 export function isDrivable(way: OsmWay): boolean {
   const t = way.tags;
@@ -65,14 +65,14 @@ export function extractRoads(osm: OsmData, bounds: Bounds, origin: Origin): Road
   return segments.filter(s => root(key(s.a)) === largest);
 }
 
-export class RoadNetwork {
-  private readonly buckets = new Map<string, RoadSegment[]>();
+export class RoadNetwork<T extends RoadSegment = RoadSegment> {
+  private readonly buckets = new Map<string, T[]>();
   readonly totalLength: number;
-  constructor(readonly segments: RoadSegment[]) {
+  constructor(readonly segments: T[], indexPadding = 3) {
     if (!segments.length) throw new Error('Road network is empty');
     this.totalLength = segments.reduce((sum, s) => sum + Math.hypot(s.b.x - s.a.x, s.b.z - s.a.z), 0);
     for (const s of segments) {
-      const pad = s.width / 2 + 3;
+      const pad = s.width / 2 + indexPadding;
       for (let x = Math.floor((Math.min(s.a.x, s.b.x) - pad) / 32); x <= Math.floor((Math.max(s.a.x, s.b.x) + pad) / 32); x++) {
         for (let z = Math.floor((Math.min(s.a.z, s.b.z) - pad) / 32); z <= Math.floor((Math.max(s.a.z, s.b.z) + pad) / 32); z++) {
           const k = `${x},${z}`;
@@ -83,7 +83,7 @@ export class RoadNetwork {
       }
     }
   }
-  nearby(p: Point): RoadSegment[] {
+  nearby(p: Point): T[] {
     return this.buckets.get(`${Math.floor(p.x / 32)},${Math.floor(p.z / 32)}`) || [];
   }
   contains(p: Point): boolean {
@@ -98,7 +98,7 @@ export class RoadNetwork {
     }
     return true;
   }
-  nearest(p: Point): { segment: RoadSegment; point: Point; distance: number } {
+  nearest(p: Point): { segment: T; point: Point; distance: number } {
     let best = this.segments[0];
     let closest = closestPoint(p, best.a, best.b);
     for (const s of this.segments) {

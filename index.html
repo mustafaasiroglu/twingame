@@ -161,10 +161,10 @@
       </nav>
     </header>
     <section id="welcome" aria-labelledby="welcome-title">
-      <p class="eyebrow">Gerçek yollar. Gerçek yükseltiler.</p>
+      <p class="eyebrow">Gerçek yollar. Kaynaklı arazi.</p>
       <h1 id="welcome-title">Eminönü<br /><span>— Sirkeci.</span></h1>
       <p>Şehri yalnızca yolları ve eğimleriyle keşfet. Ankara Caddesi’nden kıyıya veya iç sokakların yokuşlarına; rota senin.</p>
-      <p>Ok tuşlarıyla sür. Binalar, trafik ve yarış yok. Yaklaşık 30 m çözünürlüklü kaynaklı arazi, sade bir sürüş deneyimi.</p>
+      <p>Ok tuşlarıyla sür. Binalar, trafik ve yarış yok. Yaklaşık 30 m kaynaklı arazi; sürüş için yumuşatılmış yol kotları ve 3 m yol ağı.</p>
       <button id="start-button" class="primary" disabled>Sürüşe başla →</button>
       <p id="load-status" role="status" aria-live="polite">Yerel yol ve yükselti verileri yükleniyor…</p>
     </section>
@@ -174,7 +174,7 @@
         <div class="road-info"><span class="road-icon" aria-hidden="true">↗</span><div><p class="eyebrow">Şu an bulunduğun yol</p><div id="road-name">Ankara Caddesi</div></div></div>
         <div class="instruments">
           <div class="speed"><span id="speed">00</span><span class="unit">km/sa</span></div>
-          <div class="stat"><strong id="altitude">—</strong><span class="unit"> m</span><p class="eyebrow">DSM yüksekliği</p></div>
+          <div class="stat" title="Kaynak DSM'den türetilmiş, sürüş için düzenlenmiş yol yüksekliği; ölçülmüş sokak kotu değildir."><strong id="altitude">—</strong><span class="unit"> m</span><p class="eyebrow">Yol kotu*</p></div>
           <div class="stat"><strong id="distance">0.00</strong><span class="unit"> km</span><p class="eyebrow">Sürüş mesafesi</p></div>
         </div>
         <div class="keys"><kbd>↑</kbd> gaz &nbsp; <kbd>↓</kbd> fren / geri &nbsp; <kbd>←</kbd> <kbd>→</kbd> direksiyon<br /><kbd>SPACE</kbd> fren &nbsp; <kbd>V</kbd> kuşbakışı &nbsp; <kbd>R</kbd> yeniden başla</div>
@@ -188,7 +188,7 @@
         <div class="map-foot"><span><span class="legend-dot">●</span> sen buradasın</span><span id="network-length">yerel yol ağı</span></div>
       </aside>
     </div>
-    <footer class="attribution"><span>© OpenStreetMap contributors · Copernicus DEM <button id="sources-button">Veri ve sınırlar</button></span><span class="resolution">GLO-30 DSM · ölçüm amaçlı değildir · bina modeli yok</span></footer>
+    <footer class="attribution"><span>© OpenStreetMap contributors · Copernicus DEM <button id="sources-button">Veri ve sınırlar</button></span><span class="resolution">* Yol kotları sürüş için düzenlenmiştir · kaynak DSM ~30 m</span></footer>
   </div>
   <dialog id="sources-dialog" aria-labelledby="sources-title">
     <h2 id="sources-title">Veri, kaynak ve sınırlar</h2>
@@ -199,7 +199,8 @@
     <p class="notice">produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved</p>
     <p><a href="https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM" target="_blank" rel="noreferrer">Resmî ürün, lisans ve doğruluk bilgileri</a>. Bu küçük arazi kesiti İBB’nin hassas DTM ürünü değildir. İBB servisleri erişim yetkisi/API anahtarı istediğinden kullanılmadı.</p>
     <h3>Sürüş modeli</h3>
-    <p>Zemine bağlı arcade araç; tekerlekler yaklaşık eğime uyarlanır. Yerçekimli süspansiyon, hava uçuşu veya Rapier fizik simülasyonu yoktur. Yol sınırları çarpışma alanıdır; kavşaklar birleşik yüzeydir. Kaynaklar oyun sırasında sorgulanmaz; yerel JSON dosyaları kullanılır. Veri eksikse düz araziye sessiz dönüş yapılmaz.</p>
+    <p>Yol merkez çizgileri kaynak DSM'den türetilir, bağlı kavşaklarla birlikte yumuşatılır ve merkez çizgisi eğimleri en fazla %12 olacak şekilde düzenlenir. Yol enine eğimi azaltılır; kenarlardaki kazı/dolgu 18 m içinde kaynak araziye yumuşakça bağlanır. 3 m üçgen ağı çizimde ve sürüşte aynıdır. Bu kotlar gerçek ölçüm değil, oynanabilirlik düzenlemesidir; kaynak JSON yükseltileri değiştirilmez ve geniş arazi eğimleri korunur.</p>
+    <p>Zemine bağlı arcade araç; tekerlekler yol eğimine uyarlanır. Yerçekimli süspansiyon, hava uçuşu veya Rapier fizik simülasyonu yoktur. Yol sınırları çarpışma alanıdır; kavşaklar birleşik yüzeydir. Asfalt ve araç, dış varlık/uydu görüntüsü kullanılmadan kodla üretilir. Kaynaklar oyun sırasında sorgulanmaz; yerel JSON dosyaları kullanılır. Veri eksikse düz araziye sessiz dönüş yapılmaz.</p>
     <button id="close-sources" class="primary">Sürüşe dön</button>
   </dialog>
   <script type="module" src="/src/main.ts"></script>

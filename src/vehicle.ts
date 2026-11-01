@@ -4,19 +4,42 @@ import { ROAD_OFFSET, type RoadNetwork } from './roads';
 export interface Controls { throttle: number; steer: number; brake: boolean }
 export interface VehicleState extends Point {
   heading: number; speed: number; y: number; pitch: number; roll: number;
-  distance: number;
+  distance: number; steering: number;
 }
 const MAX_SPEED = 22;
 const MAX_REVERSE = 7;
 
 export function createVehicle(spawn: Point & { heading: number }, terrain: Terrain): VehicleState {
-  return { ...spawn, speed: 0, y: terrain.height(spawn.x, spawn.z) + ROAD_OFFSET, pitch: 0, roll: 0, distance: 0 };
+  return { ...spawn, ...sampleVehiclePose(spawn, spawn.heading, terrain), speed: 0, distance: 0, steering: 0 };
+}
+
+export function sampleVehiclePose(point: Point, heading: number, terrain: Terrain): { y: number; pitch: number; roll: number } {
+  const fx = Math.sin(heading), fz = Math.cos(heading);
+  const forward = terrain.height(point.x + fx * 1.18, point.z + fz * 1.18);
+  const back = terrain.height(point.x - fx * 1.18, point.z - fz * 1.18);
+  const right = terrain.height(point.x + fz * 0.86, point.z - fx * 0.86);
+  const left = terrain.height(point.x - fz * 0.86, point.z + fx * 0.86);
+  return {
+    y: terrain.height(point.x, point.z) + ROAD_OFFSET,
+    pitch: Math.atan2(forward - back, 2.36),
+    roll: Math.atan2(right - left, 1.72),
+  };
+}
+
+type Vector3 = [number, number, number];
+export function vehicleBasis(pitch: number, roll: number): { right: Vector3; up: Vector3; forward: Vector3 } {
+  const normalize = (v: Vector3): Vector3 => { const length = Math.hypot(...v); return [v[0] / length, v[1] / length, v[2] / length]; };
+  const cross = (a: Vector3, b: Vector3): Vector3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const gx = Math.tan(roll), gz = Math.tan(pitch);
+  const forward = normalize([0, gz, 1]), up = normalize([-gx, 1, -gz]);
+  return { forward, up, right: normalize(cross(up, forward)) };
 }
 
 export function stepVehicle(state: VehicleState, input: Controls, dt: number, roads: RoadNetwork, terrain: Terrain): void {
   if (!Number.isFinite(dt) || dt < 0 || dt > 0.05) throw new Error('Simulation requires a finite 0–50ms step');
   const throttle = Math.max(-1, Math.min(1, input.throttle));
   const steer = Math.max(-1, Math.min(1, input.steer));
+  state.steering = steer;
   const acceleration = throttle !== 0 && Math.sign(throttle) !== Math.sign(state.speed) && Math.abs(state.speed) > 0.5
     ? throttle * 16 : throttle * 7.5;
   const drag = input.brake ? 22 : throttle === 0 ? 2.0 : 0.25 + 0.005 * state.speed ** 2;
@@ -44,15 +67,11 @@ export function stepVehicle(state: VehicleState, input: Controls, dt: number, ro
     }
     state.speed *= Math.exp(-14 * dt);
   }
-  state.y = terrain.height(state.x, state.z) + ROAD_OFFSET;
-  const fx = Math.sin(state.heading), fz = Math.cos(state.heading);
-  const forward = terrain.height(state.x + fx * 1.3, state.z + fz * 1.3);
-  const back = terrain.height(state.x - fx * 1.3, state.z - fz * 1.3);
-  const right = terrain.height(state.x + fz * 0.75, state.z - fx * 0.75);
-  const left = terrain.height(state.x - fz * 0.75, state.z + fx * 0.75);
+  const pose = sampleVehiclePose(state, state.heading, terrain);
+  state.y = pose.y;
   const blend = 1 - Math.exp(-12 * dt);
-  state.pitch += (Math.atan2(forward - back, 2.6) - state.pitch) * blend;
-  state.roll += (Math.atan2(left - right, 1.5) - state.roll) * blend;
+  state.pitch += (pose.pitch - state.pitch) * blend;
+  state.roll += (pose.roll - state.roll) * blend;
 }
 
 const drivingKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Space']);
